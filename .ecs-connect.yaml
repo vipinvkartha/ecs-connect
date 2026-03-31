@@ -1,0 +1,9 @@
+environments:
+  - name: staging
+  - name: production
+    confirm: true
+
+default_slug: web
+
+command: "bundle exec rails c -- --noautocomplete"
+region: eu-west-1

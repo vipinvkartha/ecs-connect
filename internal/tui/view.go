@@ -55,7 +55,7 @@ func (m model) View() string {
 
 	switch m.step {
 	case stepSelectProfile:
-		b.WriteString(m.renderList("Select AWS Profile", m.profileItems, m.profileCursor))
+		b.WriteString(m.renderList("Select AWS Profile", m.applyFilter(m.profileItems), m.profileCursor))
 
 	case stepCheckAuth:
 		b.WriteString(m.breadcrumb())
@@ -63,7 +63,7 @@ func (m model) View() string {
 
 	case stepSelectEnv:
 		b.WriteString(m.breadcrumb())
-		b.WriteString(m.renderList("Select Environment", m.envItems, m.envCursor))
+		b.WriteString(m.renderList("Select Environment", m.applyFilter(m.envItems), m.envCursor))
 
 	case stepLoadClusters, stepLoadServices, stepLoadTasks:
 		b.WriteString(m.breadcrumb())
@@ -71,11 +71,12 @@ func (m model) View() string {
 
 	case stepSelectCluster:
 		b.WriteString(m.breadcrumb())
-		b.WriteString(m.renderList("Select Cluster", m.clusterItems, m.clusterCursor))
+		b.WriteString(m.renderList("Select Cluster", m.applyFilter(m.clusterItems), m.clusterCursor))
 
 	case stepSelectService:
 		b.WriteString(m.breadcrumb())
-		list := m.renderList("Select Service", m.serviceItems, m.serviceCursor)
+		visible := m.applyFilter(m.serviceItems)
+		list := m.renderList("Select Service", visible, m.serviceCursor)
 		preview := m.renderPreview()
 		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, list, "  ", preview))
 
@@ -85,14 +86,18 @@ func (m model) View() string {
 
 	case stepSelectTask:
 		b.WriteString(m.breadcrumb())
-		b.WriteString(m.renderList("Select Task", taskLabels(m.taskItems), m.taskCursor))
+		b.WriteString(m.renderList("Select Task", m.applyFilter(taskLabels(m.taskItems)), m.taskCursor))
 
 	case stepSelectContainer:
 		b.WriteString(m.breadcrumb())
-		b.WriteString(m.renderList("Select Container", m.containerItems, m.containerCursor))
+		b.WriteString(m.renderList("Select Container", m.applyFilter(m.containerItems), m.containerCursor))
 	}
 
-	b.WriteString(dimStyle.Render("\n  ↑/↓ navigate • enter select • esc cancel\n"))
+	if m.filterActive {
+		b.WriteString(dimStyle.Render("\n  ↑/↓ navigate • enter select • esc clear filter\n"))
+	} else {
+		b.WriteString(dimStyle.Render("\n  ↑/↓ navigate • enter select • / filter • esc cancel\n"))
+	}
 	return b.String()
 }
 
@@ -113,6 +118,8 @@ func (m model) breadcrumb() string {
 	}
 	if m.slug != "" {
 		parts = append(parts, m.slug)
+	} else if m.service != "" {
+		parts = append(parts, m.service)
 	}
 	if len(parts) == 0 {
 		return "\n"
@@ -124,7 +131,20 @@ func (m model) renderList(title string, items []string, cursor int) string {
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(titleStyle.Render("  " + title))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	if m.filterActive && m.filterText != "" {
+		b.WriteString(dimStyle.Render("  filter: ") + m.filterText)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+
+	if len(items) == 0 {
+		b.WriteString(dimStyle.Render("    (no matches)"))
+		b.WriteString("\n")
+		return b.String()
+	}
 
 	maxVisible := m.height - 10
 	if maxVisible < 5 {
@@ -192,7 +212,8 @@ func formatServiceInfo(info *cloud.ServiceInfo) string {
 func (m model) renderConfirm() string {
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString(warningStyle.Render("  ⚠  PRODUCTION ACCESS"))
+	envLabel := strings.ToUpper(m.environment)
+	b.WriteString(warningStyle.Render(fmt.Sprintf("  ⚠  %s ACCESS", envLabel)))
 	b.WriteString("\n\n")
 	b.WriteString(fmt.Sprintf("    Cluster:  %s\n", m.cluster))
 	b.WriteString(fmt.Sprintf("    Service:  %s\n", m.service))

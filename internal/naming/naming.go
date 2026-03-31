@@ -27,17 +27,17 @@ func ServiceMatchesConvention(service, appGroup, env string) bool {
 }
 
 // ServiceToSlug converts a full service name to a human-friendly slug.
-// {appGroup}-{env} → "web", {appGroup}-{slug}-{env} → slug.
-func ServiceToSlug(service, appGroup, env string) string {
+// {appGroup}-{env} → defaultSlug, {appGroup}-{slug}-{env} → slug.
+func ServiceToSlug(service, appGroup, env, defaultSlug string) string {
 	if service == appGroup+"-"+env {
-		return "web"
+		return defaultSlug
 	}
 	return strings.TrimPrefix(strings.TrimSuffix(service, "-"+env), appGroup+"-")
 }
 
 // SlugToServiceName converts a slug back to the full ECS service name.
-func SlugToServiceName(slug, appGroup, env string) string {
-	if slug == "web" {
+func SlugToServiceName(slug, appGroup, env, defaultSlug string) string {
+	if slug == defaultSlug {
 		return appGroup + "-" + env
 	}
 	return appGroup + "-" + slug + "-" + env

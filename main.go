@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"ecs-connect/internal/cloud"
+	appconfig "ecs-connect/internal/config"
 	"ecs-connect/internal/tui"
 )
 
@@ -20,9 +21,15 @@ func main() {
 			"  Install: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html")
 	}
 
+	fileCfg := loadConfig(cfg.ConfigPath)
+	applyConfigDefaults(&cfg, fileCfg)
+
 	var opts tui.Options
 	opts.DefaultProfile = cfg.Profile
 	opts.Region = cfg.Region
+	opts.Config = fileCfg
+	opts.Cluster = cfg.Cluster
+	opts.Service = cfg.Service
 
 	if cfg.profileExplicit {
 		client, err := cloud.New(cfg.Profile, cfg.Region)
@@ -52,13 +59,12 @@ func main() {
 		fatal("%v", err)
 	}
 
-	cfg.Profile = result.Profile
 	if !cfg.Quiet {
 		printBanner()
 	}
 	printSummary(result, cfg.Command)
 
-	if err := startSession(cfg, client, result); err != nil {
+	if err := startSession(client, result, cfg.Command); err != nil {
 		fatal("Session failed: %v", err)
 	}
 }
@@ -67,32 +73,58 @@ func main() {
 // Config
 // -------------------------------------------------------------------------
 
-type config struct {
+type cliConfig struct {
 	Profile         string
 	Region          string
 	Command         string
 	Quiet           bool
+	ConfigPath      string
+	Cluster         string
+	Service         string
 	profileExplicit bool
+	regionExplicit  bool
+	commandExplicit bool
 }
 
-func parseFlags() config {
-	var c config
+func parseFlags() cliConfig {
+	var c cliConfig
 	flag.StringVar(&c.Profile, "profile", os.Getenv("AWS_PROFILE"),
 		"AWS CLI profile (env: AWS_PROFILE)")
-	flag.StringVar(&c.Region, "region", envOr("AWS_REGION", "eu-west-1"),
-		"AWS region (env: AWS_REGION)")
-	flag.StringVar(&c.Command, "command", envOr("COMMAND", "bundle exec rails c -- --noautocomplete"),
+	flag.StringVar(&c.Region, "region", regionDefault(),
+		"AWS region (env: AWS_REGION, AWS_DEFAULT_REGION; defaults to profile region)")
+	flag.StringVar(&c.Command, "command", envOr("COMMAND", "/bin/sh"),
 		"Command to execute in container (env: COMMAND)")
 	flag.BoolVar(&c.Quiet, "quiet", os.Getenv("ECS_CONNECT_QUIET") == "1",
 		"Suppress documentation banner (env: ECS_CONNECT_QUIET=1)")
+	flag.StringVar(&c.ConfigPath, "config", os.Getenv("ECS_CONNECT_CONFIG"),
+		"Path to config file (env: ECS_CONNECT_CONFIG)")
+	flag.StringVar(&c.Cluster, "cluster", "",
+		"ECS cluster name (skip interactive selection)")
+	flag.StringVar(&c.Service, "service", "",
+		"ECS service name (skip interactive selection)")
 	flag.Parse()
 
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "profile" {
+		switch f.Name {
+		case "profile":
 			c.profileExplicit = true
+		case "region":
+			c.regionExplicit = true
+		case "command":
+			c.commandExplicit = true
 		}
 	})
 	return c
+}
+
+func regionDefault() string {
+	if v := os.Getenv("AWS_REGION"); v != "" {
+		return v
+	}
+	if v := os.Getenv("AWS_DEFAULT_REGION"); v != "" {
+		return v
+	}
+	return ""
 }
 
 func envOr(key, fallback string) string {
@@ -100,6 +132,31 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func loadConfig(path string) *appconfig.Config {
+	if path != "" {
+		cfg, err := appconfig.Load(path)
+		if err != nil {
+			fatal("config file: %v", err)
+		}
+		return cfg
+	}
+	return appconfig.Discover()
+}
+
+// applyConfigDefaults overrides built-in defaults with values from the config
+// file, but only when the corresponding flag/env var was not explicitly set.
+func applyConfigDefaults(cfg *cliConfig, fileCfg *appconfig.Config) {
+	if fileCfg == nil {
+		return
+	}
+	if !cfg.regionExplicit && os.Getenv("AWS_REGION") == "" && os.Getenv("AWS_DEFAULT_REGION") == "" && fileCfg.Region != "" {
+		cfg.Region = fileCfg.Region
+	}
+	if !cfg.commandExplicit && os.Getenv("COMMAND") == "" && fileCfg.Command != "" {
+		cfg.Command = fileCfg.Command
+	}
 }
 
 // -------------------------------------------------------------------------
@@ -111,39 +168,41 @@ func printBanner() {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   ecs-connect — interactive ECS Exec into a running task
 
-  Flow
-    [Profile →] Environment → Auth check → Cluster → Service
-    → [production confirm] → Task → Container → execute-command
-
   Flags
-    --profile    AWS CLI profile  (env: AWS_PROFILE)
-    --region     AWS region       (env: AWS_REGION, default: eu-west-1)
-    --command    Container cmd    (env: COMMAND)
-    --quiet      Suppress banner  (env: ECS_CONNECT_QUIET=1)
+    --profile    AWS CLI profile     (env: AWS_PROFILE)
+    --region     AWS region          (env: AWS_REGION; from profile if unset)
+    --command    Container command   (env: COMMAND, default: /bin/sh)
+    --config     Config file path    (env: ECS_CONNECT_CONFIG)
+    --cluster    Skip cluster picker
+    --service    Skip service picker
+    --quiet      Suppress banner     (env: ECS_CONNECT_QUIET=1)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
 }
 
 func printSummary(r *tui.Result, command string) {
-	fmt.Printf(`
-  Profile     : %s
-  Environment : %s
-  Cluster     : %s
-  Service     : %s
-  Task        : %s
-  Container   : %s
-  Command     : %s
-
-`, r.Profile, r.Environment, r.Cluster, r.Service, r.TaskShortID, r.Container, command)
+	fmt.Println()
+	if r.Profile != "" {
+		fmt.Printf("  Profile     : %s\n", r.Profile)
+	}
+	if r.Environment != "" {
+		fmt.Printf("  Environment : %s\n", r.Environment)
+	}
+	fmt.Printf("  Cluster     : %s\n", r.Cluster)
+	fmt.Printf("  Service     : %s\n", r.Service)
+	fmt.Printf("  Task        : %s\n", r.TaskShortID)
+	fmt.Printf("  Container   : %s\n", r.Container)
+	fmt.Printf("  Command     : %s\n", command)
+	fmt.Println()
 }
 
 // -------------------------------------------------------------------------
 // ECS Exec → session-manager-plugin
 // -------------------------------------------------------------------------
 
-func startSession(cfg config, client *cloud.Client, r *tui.Result) error {
+func startSession(client *cloud.Client, r *tui.Result, command string) error {
 	fmt.Println("  Starting session...")
 
-	sess, err := client.ExecuteCommand(r.Cluster, r.TaskARN, r.Container, cfg.Command)
+	sess, err := client.ExecuteCommand(r.Cluster, r.TaskARN, r.Container, command)
 	if err != nil {
 		return err
 	}
@@ -156,18 +215,16 @@ func startSession(cfg config, client *cloud.Client, r *tui.Result) error {
 	targetJSON, _ := json.Marshal(map[string]string{
 		"Target": r.TaskARN,
 	})
-	endpoint := fmt.Sprintf("https://ssm.%s.amazonaws.com", cfg.Region)
+	endpoint := fmt.Sprintf("https://ssm.%s.amazonaws.com", client.Region)
 
 	pluginPath, _ := exec.LookPath("session-manager-plugin")
 
-	// Replace our process with session-manager-plugin so signals and terminal
-	// I/O are handled natively by the plugin.
 	return syscall.Exec(pluginPath, []string{
 		"session-manager-plugin",
 		string(sessJSON),
-		cfg.Region,
+		client.Region,
 		"StartSession",
-		cfg.Profile,
+		client.Profile,
 		string(targetJSON),
 		endpoint,
 	}, os.Environ())

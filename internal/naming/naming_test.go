@@ -70,10 +70,16 @@ func TestServiceToSlug(t *testing.T) {
 		{"home-background-worker-staging", "home", "staging", "background-worker"},
 	}
 	for _, tt := range tests {
-		if got := ServiceToSlug(tt.service, tt.appGroup, tt.env); got != tt.want {
-			t.Errorf("ServiceToSlug(%q, %q, %q) = %q, want %q",
+		if got := ServiceToSlug(tt.service, tt.appGroup, tt.env, "web"); got != tt.want {
+			t.Errorf("ServiceToSlug(%q, %q, %q, \"web\") = %q, want %q",
 				tt.service, tt.appGroup, tt.env, got, tt.want)
 		}
+	}
+}
+
+func TestServiceToSlugCustomDefault(t *testing.T) {
+	if got := ServiceToSlug("home-staging", "home", "staging", "main"); got != "main" {
+		t.Errorf("ServiceToSlug with custom default = %q, want %q", got, "main")
 	}
 }
 
@@ -87,10 +93,16 @@ func TestSlugToServiceName(t *testing.T) {
 		{"background-worker", "home", "staging", "home-background-worker-staging"},
 	}
 	for _, tt := range tests {
-		if got := SlugToServiceName(tt.slug, tt.appGroup, tt.env); got != tt.want {
-			t.Errorf("SlugToServiceName(%q, %q, %q) = %q, want %q",
+		if got := SlugToServiceName(tt.slug, tt.appGroup, tt.env, "web"); got != tt.want {
+			t.Errorf("SlugToServiceName(%q, %q, %q, \"web\") = %q, want %q",
 				tt.slug, tt.appGroup, tt.env, got, tt.want)
 		}
+	}
+}
+
+func TestSlugToServiceNameCustomDefault(t *testing.T) {
+	if got := SlugToServiceName("main", "home", "staging", "main"); got != "home-staging" {
+		t.Errorf("SlugToServiceName with custom default = %q, want %q", got, "home-staging")
 	}
 }
 
@@ -103,8 +115,8 @@ func TestRoundTrip(t *testing.T) {
 		{"home-api-production", "home", "production"},
 	}
 	for _, tt := range cases {
-		slug := ServiceToSlug(tt.service, tt.appGroup, tt.env)
-		got := SlugToServiceName(slug, tt.appGroup, tt.env)
+		slug := ServiceToSlug(tt.service, tt.appGroup, tt.env, "web")
+		got := SlugToServiceName(slug, tt.appGroup, tt.env, "web")
 		if got != tt.service {
 			t.Errorf("round-trip failed: %q → slug %q → %q (want %q)",
 				tt.service, slug, got, tt.service)

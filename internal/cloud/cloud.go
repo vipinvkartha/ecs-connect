@@ -23,18 +23,24 @@ type Client struct {
 }
 
 // New creates an AWS Client configured for the given profile and region.
+// Empty profile or region values are omitted, letting the SDK resolve them
+// from the environment or shared config.
 func New(profile, region string) (*Client, error) {
-	cfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithSharedConfigProfile(profile),
-		awsconfig.WithRegion(region),
-	)
+	var opts []func(*awsconfig.LoadOptions) error
+	if profile != "" {
+		opts = append(opts, awsconfig.WithSharedConfigProfile(profile))
+	}
+	if region != "" {
+		opts = append(opts, awsconfig.WithRegion(region))
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("load AWS config: %w", err)
 	}
 	return &Client{
 		ecs:     ecs.NewFromConfig(cfg),
 		sts:     sts.NewFromConfig(cfg),
-		Region:  region,
+		Region:  cfg.Region,
 		Profile: profile,
 	}, nil
 }
