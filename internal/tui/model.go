@@ -35,13 +35,10 @@ type Result struct {
 
 // Options configures the TUI wizard.
 type Options struct {
-	Client         *cloud.Client  // pre-built client (skips profile selection)
-	Profiles       []string       // available AWS profiles for interactive selection
-	DefaultProfile string         // pre-highlighted profile in the picker
-	Region         string         // AWS region (needed when creating client from profile)
-	Config         *config.Config // naming/env config (nil = generic mode)
-	Cluster        string         // pre-selected cluster (skip picker)
-	Service        string         // pre-selected service (skip picker)
+	Client  *cloud.Client  // pre-authenticated client (built by main)
+	Config  *config.Config // naming/env config (nil = generic mode)
+	Cluster string         // pre-selected cluster (skip picker)
+	Service string         // pre-selected service (skip picker)
 }
 
 // Run launches the interactive TUI wizard and returns the collected result
@@ -70,8 +67,7 @@ func Run(opts Options) (*Result, *cloud.Client, error) {
 type step int
 
 const (
-	stepSelectProfile step = iota
-	stepCheckAuth
+	stepCheckAuth step = iota
 	stepSelectEnv
 	stepLoadClusters
 	stepSelectCluster
@@ -91,11 +87,6 @@ const (
 type (
 	authOKMsg  string
 	authErrMsg struct{ err error }
-
-	clientReadyMsg struct {
-		client *cloud.Client
-		arn    string
-	}
 
 	clustersMsg []string
 	servicesMsg []string
@@ -123,11 +114,7 @@ type model struct {
 	spinner    spinner.Model
 	loadingMsg string
 
-	// profile selection
-	profileItems  []string
-	profileCursor int
-	profile       string
-	region        string
+	profile string
 
 	// list-selection state
 	envItems       []string
@@ -185,31 +172,15 @@ func newModel(opts Options) model {
 		spinner:      s,
 		confirmInput: ti,
 		previewCache: make(map[string]*cloud.ServiceInfo),
-		profileItems: opts.Profiles,
-		profile:      opts.DefaultProfile,
-		region:       opts.Region,
+		profile:      opts.Client.Profile,
 		cluster:      opts.Cluster,
 		service:      opts.Service,
+		step:         stepCheckAuth,
 	}
 
 	if m.cfg.HasNaming() {
 		for _, e := range m.cfg.Environments {
 			m.envItems = append(m.envItems, e.Name)
-		}
-	}
-
-	if opts.Client != nil || len(opts.Profiles) == 0 {
-		m.step = stepCheckAuth
-		if opts.Client != nil {
-			m.profile = opts.Client.Profile
-		}
-	} else {
-		m.step = stepSelectProfile
-		for i, p := range opts.Profiles {
-			if p == opts.DefaultProfile {
-				m.profileCursor = i
-				break
-			}
 		}
 	}
 
@@ -274,7 +245,7 @@ func (m model) applyFilter(items []string) []string {
 
 func (m model) isListStep() bool {
 	switch m.step {
-	case stepSelectProfile, stepSelectEnv, stepSelectCluster,
+	case stepSelectEnv, stepSelectCluster,
 		stepSelectService, stepSelectTask, stepSelectContainer:
 		return true
 	}
@@ -283,10 +254,6 @@ func (m model) isListStep() bool {
 
 func (m *model) clampCurrentCursor() {
 	switch m.step {
-	case stepSelectProfile:
-		if n := len(m.applyFilter(m.profileItems)); m.profileCursor >= n {
-			m.profileCursor = max(0, n-1)
-		}
 	case stepSelectEnv:
 		if n := len(m.applyFilter(m.envItems)); m.envCursor >= n {
 			m.envCursor = max(0, n-1)
@@ -333,9 +300,6 @@ func (m *model) updateServicePreview() tea.Cmd {
 // ---------------------------------------------------------------------------
 
 func (m model) Init() tea.Cmd {
-	if m.step == stepSelectProfile {
-		return m.spinner.Tick
-	}
 	return tea.Batch(m.spinner.Tick, m.checkAuth())
 }
 
@@ -408,17 +372,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch m.step {
-		case stepSelectProfile:
-			visible := m.applyFilter(m.profileItems)
-			if listNav(msg, &m.profileCursor, len(visible)) {
-				if len(visible) > 0 && m.profileCursor < len(visible) {
-					m.profile = visible[m.profileCursor]
-					m.resetFilter()
-					m.step = stepCheckAuth
-					return m, m.initClient()
-				}
-			}
-
 		case stepSelectEnv:
 			visible := m.applyFilter(m.envItems)
 			if listNav(msg, &m.envCursor, len(visible)) {
@@ -557,13 +510,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"not authenticated — run:\n\n  aws sso login --profile %s", m.profile)
 		return m, tea.Quit
 
-	case clientReadyMsg:
-		m.client = msg.client
-		m.authARN = msg.arn
-		next, cmd := m.afterAuth()
-		m.step = next
-		return m, cmd
-
 	case clustersMsg:
 		var items []string
 		if m.useNaming() && m.environment != "" {
@@ -686,22 +632,6 @@ func (m *model) done() tea.Cmd {
 // ---------------------------------------------------------------------------
 // Async commands (tea.Cmd)
 // ---------------------------------------------------------------------------
-
-func (m model) initClient() tea.Cmd {
-	profile := m.profile
-	region := m.region
-	return func() tea.Msg {
-		client, err := cloud.New(profile, region)
-		if err != nil {
-			return errMsg{fmt.Errorf("AWS client for profile %q: %w", profile, err)}
-		}
-		arn, err := client.CheckAuth(context.Background())
-		if err != nil {
-			return authErrMsg{err}
-		}
-		return clientReadyMsg{client: client, arn: arn}
-	}
-}
 
 func (m model) checkAuth() tea.Cmd {
 	return func() tea.Msg {

@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"ecs-connect/internal/cloud"
@@ -24,31 +28,13 @@ func main() {
 	fileCfg := loadConfig(cfg.ConfigPath)
 	applyConfigDefaults(&cfg, fileCfg)
 
+	client := ensureAuth(cfg.Profile, cfg.Region)
+
 	var opts tui.Options
-	opts.DefaultProfile = cfg.Profile
-	opts.Region = cfg.Region
+	opts.Client = client
 	opts.Config = fileCfg
 	opts.Cluster = cfg.Cluster
 	opts.Service = cfg.Service
-
-	if cfg.profileExplicit {
-		client, err := cloud.New(cfg.Profile, cfg.Region)
-		if err != nil {
-			fatal("Failed to initialise AWS client: %v", err)
-		}
-		opts.Client = client
-	} else {
-		profiles := cloud.ListProfiles()
-		if len(profiles) > 0 {
-			opts.Profiles = profiles
-		} else {
-			client, err := cloud.New(cfg.Profile, cfg.Region)
-			if err != nil {
-				fatal("Failed to initialise AWS client: %v", err)
-			}
-			opts.Client = client
-		}
-	}
 
 	result, client, err := tui.Run(opts)
 	if err != nil {
@@ -151,12 +137,156 @@ func applyConfigDefaults(cfg *cliConfig, fileCfg *appconfig.Config) {
 	if fileCfg == nil {
 		return
 	}
+	if !cfg.profileExplicit && os.Getenv("AWS_PROFILE") == "" && fileCfg.Profile != "" {
+		cfg.Profile = fileCfg.Profile
+	}
 	if !cfg.regionExplicit && os.Getenv("AWS_REGION") == "" && os.Getenv("AWS_DEFAULT_REGION") == "" && fileCfg.Region != "" {
 		cfg.Region = fileCfg.Region
 	}
 	if !cfg.commandExplicit && os.Getenv("COMMAND") == "" && fileCfg.Command != "" {
 		cfg.Command = fileCfg.Command
 	}
+}
+
+// -------------------------------------------------------------------------
+// Auth: check credentials, auto-login via SSO if needed
+// -------------------------------------------------------------------------
+
+// ensureAuth checks if the user is already authenticated via STS.
+//   - If a profile is given (flag/env/config): use it, auto SSO login if needed.
+//   - If no profile is given: try the default credential chain, then scan all
+//     profiles for an active session. Only prompts to pick a profile and login
+//     if no existing session is found.
+func ensureAuth(profile, region string) *cloud.Client {
+	if profile != "" {
+		return authWithProfile(profile, region)
+	}
+
+	// Try default credential chain first (covers AWS_PROFILE, env creds,
+	// [default] profile, instance roles, etc.).
+	client, err := cloud.New("", region)
+	if err == nil {
+		if _, err := client.CheckAuth(context.Background()); err == nil {
+			fmt.Print("\n  ✓ Already authenticated\n\n")
+			return client
+		}
+	}
+
+	// Default chain failed — SSO tokens are profile-specific, so check
+	// each profile for an active session.
+	fmt.Print("\n  Checking for active AWS sessions...")
+	for _, p := range cloud.ListProfiles() {
+		c, err := cloud.New(p, region)
+		if err != nil {
+			continue
+		}
+		if _, err := c.CheckAuth(context.Background()); err == nil {
+			fmt.Printf(" found!\n\n  ✓ Authenticated (profile: %s)\n\n", p)
+			return c
+		}
+	}
+
+	// No active session on any profile — prompt to choose and login.
+	fmt.Print(" none found.\n\n  ⚠ No active AWS session.\n")
+	profile = promptProfile()
+	return authWithProfile(profile, region)
+}
+
+// authWithProfile authenticates with a specific profile, auto-running
+// `aws sso login` if credentials are expired or missing.
+func authWithProfile(profile, region string) *cloud.Client {
+	client, err := cloud.New(profile, region)
+	if err != nil {
+		fatal("Failed to initialise AWS client: %v", err)
+	}
+
+	_, err = client.CheckAuth(context.Background())
+	if err == nil {
+		fmt.Printf("\n  ✓ Authenticated as profile %q\n\n", profile)
+		return client
+	}
+
+	fmt.Printf("\n  ⚠ Not logged in (profile: %s). Running SSO login...\n\n", profile)
+
+	if err := runSSOLogin(profile); err != nil {
+		fatal("SSO login failed: %v\n\n  You can also try manually:\n    aws sso login --profile %s", err, profile)
+	}
+
+	client, err = cloud.New(profile, region)
+	if err != nil {
+		fatal("Failed to initialise AWS client after login: %v", err)
+	}
+
+	_, err = client.CheckAuth(context.Background())
+	if err != nil {
+		fatal("Still not authenticated after SSO login.\n\n  Details: %v\n\n  Verify the profile %q has valid SSO config and you completed the browser login.", err, profile)
+	}
+
+	fmt.Printf("\n  ✓ Authenticated as profile %q\n\n", profile)
+	return client
+}
+
+// promptProfile lists AWS profiles from ~/.aws/config and asks the user
+// to pick one. Falls back to "default" if no profiles are found.
+func promptProfile() string {
+	profiles := cloud.ListProfiles()
+	if len(profiles) == 0 {
+		return "default"
+	}
+
+	fmt.Print("\n  No profile specified. Available AWS profiles:\n\n")
+	for i, p := range profiles {
+		fmt.Printf("    %d) %s\n", i+1, p)
+	}
+	fmt.Printf("    %d) Enter a profile name manually\n", len(profiles)+1)
+	fmt.Println()
+
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Printf("  Choose an option [1-%d]: ", len(profiles)+1)
+		line, _ := reader.ReadString('\n')
+		line = strings.TrimSpace(line)
+
+		if line == "" {
+			continue
+		}
+		n, err := strconv.Atoi(line)
+		if err != nil || n < 1 || n > len(profiles)+1 {
+			fmt.Printf("  Invalid choice %q — enter a number between 1 and %d.\n", line, len(profiles)+1)
+			continue
+		}
+
+		if n == len(profiles)+1 {
+			for {
+				fmt.Print("  Enter profile name: ")
+				name, _ := reader.ReadString('\n')
+				name = strings.TrimSpace(name)
+				if name != "" {
+					fmt.Printf("\n  Selected profile: %s\n", name)
+					return name
+				}
+			}
+		}
+
+		selected := profiles[n-1]
+		fmt.Printf("\n  Selected profile: %s\n", selected)
+		return selected
+	}
+}
+
+// runSSOLogin shells out to `aws sso login --profile <profile>`.
+// The command inherits stdin/stdout/stderr so the user can complete the
+// browser-based login flow interactively.
+func runSSOLogin(profile string) error {
+	awsPath, err := exec.LookPath("aws")
+	if err != nil {
+		return fmt.Errorf("aws CLI not found in PATH — install it to enable automatic SSO login")
+	}
+	cmd := exec.Command(awsPath, "sso", "login", "--profile", profile)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // -------------------------------------------------------------------------
@@ -169,7 +299,7 @@ func printBanner() {
   ecs-connect — interactive ECS Exec into a running task
 
   Flags
-    --profile    AWS CLI profile     (env: AWS_PROFILE)
+    --profile    AWS CLI profile     (env: AWS_PROFILE; prompted if unset)
     --region     AWS region          (env: AWS_REGION; from profile if unset)
     --command    Container command   (env: COMMAND, default: /bin/sh)
     --config     Config file path    (env: ECS_CONNECT_CONFIG)

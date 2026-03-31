@@ -54,9 +54,6 @@ func (m model) View() string {
 	var b strings.Builder
 
 	switch m.step {
-	case stepSelectProfile:
-		b.WriteString(m.renderList("Select AWS Profile", m.applyFilter(m.profileItems), m.profileCursor))
-
 	case stepCheckAuth:
 		b.WriteString(m.breadcrumb())
 		b.WriteString(fmt.Sprintf("\n  %s Checking AWS credentials...\n", m.spinner.View()))

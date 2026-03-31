@@ -9,6 +9,7 @@ import (
 
 // Config holds optional project-level settings loaded from .ecs-connect.yaml.
 type Config struct {
+	Profile      string        `yaml:"profile"`
 	Environments []Environment `yaml:"environments"`
 	DefaultSlug  string        `yaml:"default_slug"`
 	Command      string        `yaml:"command"`

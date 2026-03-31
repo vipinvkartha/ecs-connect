@@ -34,43 +34,41 @@ ECS_CONNECT_QUIET=1 ./ecs-connect
 ### Default mode (no config file)
 
 ```
- Profile          Cluster              Service            Task        Container
-┌────────────┐  ┌──────────────────┐  ┌──────────────┐  ┌──────────┐ ┌──────────┐
-│ default    │─▶│ my-cluster-a     │─▶│ my-service-a │─▶│ (auto)   │─▶│ (auto)  │──▶ Session
-│ my-profile │  │ my-cluster-b     │  │ my-service-b │  │ or pick  │ │ or pick  │
-│ (skip if   │  └──────────────────┘  │ my-service-c │  └──────────┘ └──────────┘
-│  --profile)│                        └──────────────┘
-└────────────┘                          ▲ preview panel
+ Profile          Auth               Cluster              Service            Task        Container
+┌────────────┐  ┌────────────┐    ┌──────────────────┐  ┌──────────────┐  ┌──────────┐ ┌──────────┐
+│ pick from  │─▶│ STS check  │──▶│ my-cluster-a     │─▶│ my-service-a │─▶│ (auto)   │─▶│ (auto)  │──▶ Session
+│ ~/.aws or  │  │ SSO login  │   │ my-cluster-b     │  │ my-service-b │  │ or pick  │ │ or pick  │
+│ --profile  │  │ if needed  │   └──────────────────┘  │ my-service-c │  └──────────┘ └──────────┘
+└────────────┘  └────────────┘                         └──────────────┘
+                                        ▲ preview panel
                                         │ shows service health
 ```
 
-1. **Select profile** — picks an AWS profile from `~/.aws/config`. Skipped if `--profile` is passed.
-2. **Auth check** — validates your AWS session (STS); tells you to `aws sso login` if expired.
-3. **Select cluster** — lists all ECS clusters in the account.
-4. **Select service** — lists all services in the selected cluster with a live preview panel.
-5. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
-6. **Select container** — auto-selects if the task has a single container; prompts otherwise.
-7. **Connect** — calls `ExecuteCommand` and hands off to `session-manager-plugin`.
+1. **Auth** — if no profile was given (flag / env / config), **prompts you to choose** from `~/.aws/config`. Checks credentials via STS; if not logged in, **automatically runs `aws sso login`** for the chosen profile, then retries.
+2. **Select cluster** — lists all ECS clusters in the account.
+3. **Select service** — lists all services in the selected cluster with a live preview panel.
+4. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
+5. **Select container** — auto-selects if the task has a single container; prompts otherwise.
+6. **Connect** — calls `ExecuteCommand` and hands off to `session-manager-plugin`.
 
 ### With config file (environment-based naming)
 
 When a `.ecs-connect.yaml` config file is present with environments defined, the tool adds environment selection and service slug mapping:
 
 ```
- Profile        Environment       Cluster            Service          Task
+ Auth (auto)    Environment       Cluster            Service          Task
 ┌────────────┐ ┌────────────┐   ┌────────────────┐  ┌────────────┐  ┌──────────┐
-│ (optional) │▶│ staging    │──▶│ home-staging   │─▶│ web        │─▶│ (auto)   │──▶ Session
-└────────────┘ │ production │   │ auth-staging   │  │ worker     │  │ or pick  │
-               └────────────┘   └────────────────┘  │ sidekiq    │  └──────────┘
-                                                    └────────────┘
+│ STS check  │▶│ staging    │──▶│ home-staging   │─▶│ web        │─▶│ (auto)   │──▶ Session
+│ SSO login  │ │ production │   │ auth-staging   │  │ worker     │  │ or pick  │
+│ if needed  │ └────────────┘   └────────────────┘  │ sidekiq    │  └──────────┘
+└────────────┘                                      └────────────┘
                                                       ▲ preview panel
                                                       │ shows status, desired/running
                                                       │ counts, and task definition
 ```
 
-1. **Select profile** — picks an AWS profile from `~/.aws/config`. Skipped if `--profile` is passed.
-2. **Auth check** — validates your AWS session (STS); tells you to `aws sso login` if expired.
-3. **Select environment** — from the environments listed in the config file.
+1. **Auth** — same profile prompt + auto-login as default mode.
+2. **Select environment** — from the environments listed in the config file.
 4. **Select cluster** — lists clusters ending with `-{env}` (e.g. `home-staging`).
 5. **Select service** — maps ECS services to friendly slugs (`web`, `worker`, …) with a live preview panel showing service health.
 6. **Confirmation** — if the selected environment has `confirm: true`, you must type `yes` to proceed.
@@ -105,6 +103,12 @@ For example, `--command /bin/bash` overrides `COMMAND` env var, which overrides 
 # .ecs-connect.yaml — all fields are optional
 # ──────────────────────────────────────────────────────────────────────
 
+# profile — AWS CLI profile to use.
+# Overridden by --profile flag or AWS_PROFILE env var.
+# If not logged in, ecs-connect runs `aws sso login --profile <this>`
+# automatically.
+profile: my-aws-profile
+
 # environments — list of environment names.
 # When present, enables the environment selection step and
 # cluster/service naming conventions ({app}-{env}).
@@ -134,6 +138,7 @@ region: eu-west-1
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `profile` | string | *(prompted)* | AWS CLI profile. If omitted and no `--profile` / `AWS_PROFILE`, lists available profiles and asks you to choose. |
 | `environments` | list | *(empty — generic mode)* | Defines the selectable environments. Each entry has a `name` (required) and an optional `confirm` flag. When present, enables environment-based cluster/service filtering. |
 | `environments[].name` | string | — | Environment name (e.g. `staging`, `production`, `dev`). Clusters ending with `-{name}` are shown for this environment. |
 | `environments[].confirm` | bool | `false` | When `true`, the user must type `yes` before connecting. Useful for production or other sensitive environments. |
@@ -153,6 +158,7 @@ region: us-west-2
 **Rails app with staging + production:**
 
 ```yaml
+profile: my-company-prod
 environments:
   - name: staging
   - name: production
@@ -165,6 +171,7 @@ region: eu-west-1
 **Python/Django app with three environments:**
 
 ```yaml
+profile: django-sso
 environments:
   - name: dev
   - name: staging
@@ -202,7 +209,7 @@ All settings can be passed as flags or environment variables. Flags take precede
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
-| `--profile` | `AWS_PROFILE` | *(interactive picker)* | AWS CLI / SSO profile |
+| `--profile` | `AWS_PROFILE` | *(prompted)* | AWS CLI / SSO profile; if unset, lists profiles and asks you to choose |
 | `--region` | `AWS_REGION`, `AWS_DEFAULT_REGION` | *(from profile)* | AWS region |
 | `--command` | `COMMAND` | `/bin/sh` | Command to run in the container |
 | `--config` | `ECS_CONNECT_CONFIG` | *(auto-discover)* | Path to config file |
