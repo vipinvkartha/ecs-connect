@@ -10,7 +10,7 @@ Pick a cluster, service, and task through a guided TUI wizard, and land in a she
 # Build
 go build -o ecs-connect .
 
-# Run (interactive wizard)
+# Run (interactive wizard — auto-detects credentials)
 ./ecs-connect
 
 # Run with a specific profile
@@ -31,20 +31,54 @@ ECS_CONNECT_QUIET=1 ./ecs-connect
 
 ## How it works
 
+### Authentication flow
+
+The tool resolves credentials in this order:
+
+1. **Profile given** (via `--profile`, `AWS_PROFILE`, or config file `profile:`) — uses that profile directly. If the session is expired, automatically runs `aws sso login --profile <name>`.
+2. **No profile given** — runs a single STS check using the default credential chain (env vars, `[default]` profile, instance role). If that succeeds, proceeds immediately.
+3. **Default chain fails** — scans every profile in `~/.aws/config` for an active SSO session. If one is found, uses it automatically.
+4. **No active session found** — prompts you to choose a profile (or type one manually), then runs `aws sso login` for you.
+
+```
+ Already logged in?
+┌─────────────────────────────────────┐
+│ 1. Try default credential chain     │──── ✓ Already authenticated ──▶ proceed
+│ 2. Scan all profiles in ~/.aws      │──── ✓ Found session (profile: X) ──▶ proceed
+│ 3. Prompt user to pick a profile    │──── aws sso login ──▶ proceed
+└─────────────────────────────────────┘
+```
+
+When prompted, the profile picker looks like this:
+
+```
+  ⚠ No active AWS session.
+
+  Available AWS profiles:
+
+    1) default
+    2) sandbox
+    3) sandbox-fullaccess-301581146302
+    4) production-identity-390571511014
+    5) Enter a profile name manually
+
+  Choose an option [1-5]:
+```
+
 ### Default mode (no config file)
 
 ```
- Profile          Auth               Cluster              Service            Task        Container
-┌────────────┐  ┌────────────┐    ┌──────────────────┐  ┌──────────────┐  ┌──────────┐ ┌──────────┐
-│ pick from  │─▶│ STS check  │──▶│ my-cluster-a     │─▶│ my-service-a │─▶│ (auto)   │─▶│ (auto)  │──▶ Session
-│ ~/.aws or  │  │ SSO login  │   │ my-cluster-b     │  │ my-service-b │  │ or pick  │ │ or pick  │
-│ --profile  │  │ if needed  │   └──────────────────┘  │ my-service-c │  └──────────┘ └──────────┘
-└────────────┘  └────────────┘                         └──────────────┘
+ Auth             Cluster              Service            Task        Container
+┌────────────┐  ┌──────────────────┐  ┌──────────────┐  ┌──────────┐ ┌──────────┐
+│ auto-detect│─▶│ my-cluster-a     │─▶│ my-service-a │─▶│ (auto)   │─▶│ (auto)  │──▶ Session
+│ or prompt  │  │ my-cluster-b     │  │ my-service-b │  │ or pick  │ │ or pick  │
+│ + SSO login│  └──────────────────┘  │ my-service-c │  └──────────┘ └──────────┘
+└────────────┘                        └──────────────┘
                                         ▲ preview panel
                                         │ shows service health
 ```
 
-1. **Auth** — if no profile was given (flag / env / config), **prompts you to choose** from `~/.aws/config`. Checks credentials via STS; if not logged in, **automatically runs `aws sso login`** for the chosen profile, then retries.
+1. **Auth** — resolves credentials automatically (see authentication flow above). Only prompts if no active session is found anywhere.
 2. **Select cluster** — lists all ECS clusters in the account.
 3. **Select service** — lists all services in the selected cluster with a live preview panel.
 4. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
@@ -56,25 +90,25 @@ ECS_CONNECT_QUIET=1 ./ecs-connect
 When a `.ecs-connect.yaml` config file is present with environments defined, the tool adds environment selection and service slug mapping:
 
 ```
- Auth (auto)    Environment       Cluster            Service          Task
+ Auth           Environment       Cluster            Service          Task
 ┌────────────┐ ┌────────────┐   ┌────────────────┐  ┌────────────┐  ┌──────────┐
-│ STS check  │▶│ staging    │──▶│ home-staging   │─▶│ web        │─▶│ (auto)   │──▶ Session
-│ SSO login  │ │ production │   │ auth-staging   │  │ worker     │  │ or pick  │
-│ if needed  │ └────────────┘   └────────────────┘  │ sidekiq    │  └──────────┘
+│ auto-detect│▶│ staging    │──▶│ home-staging   │─▶│ web        │─▶│ (auto)   │──▶ Session
+│ or prompt  │ │ production │   │ auth-staging   │  │ worker     │  │ or pick  │
+│ + SSO login│ └────────────┘   └────────────────┘  │ sidekiq    │  └──────────┘
 └────────────┘                                      └────────────┘
                                                       ▲ preview panel
                                                       │ shows status, desired/running
                                                       │ counts, and task definition
 ```
 
-1. **Auth** — same profile prompt + auto-login as default mode.
+1. **Auth** — same auto-detect flow as default mode.
 2. **Select environment** — from the environments listed in the config file.
-4. **Select cluster** — lists clusters ending with `-{env}` (e.g. `home-staging`).
-5. **Select service** — maps ECS services to friendly slugs (`web`, `worker`, …) with a live preview panel showing service health.
-6. **Confirmation** — if the selected environment has `confirm: true`, you must type `yes` to proceed.
-7. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
-8. **Select container** — auto-selects if the task has a single container; prompts otherwise.
-9. **Connect** — calls `ExecuteCommand` and hands off to `session-manager-plugin`.
+3. **Select cluster** — lists clusters ending with `-{env}` (e.g. `home-staging`).
+4. **Select service** — maps ECS services to friendly slugs (`web`, `worker`, …) with a live preview panel showing service health.
+5. **Confirmation** — if the selected environment has `confirm: true`, you must type `yes` to proceed.
+6. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
+7. **Select container** — auto-selects if the task has a single container; prompts otherwise.
+8. **Connect** — calls `ExecuteCommand` and hands off to `session-manager-plugin`.
 
 ## Configuration
 
@@ -105,8 +139,8 @@ For example, `--command /bin/bash` overrides `COMMAND` env var, which overrides 
 
 # profile — AWS CLI profile to use.
 # Overridden by --profile flag or AWS_PROFILE env var.
-# If not logged in, ecs-connect runs `aws sso login --profile <this>`
-# automatically.
+# If not set (and not given via flag/env), the tool auto-detects
+# active sessions or prompts you to choose a profile.
 profile: my-aws-profile
 
 # environments — list of environment names.
@@ -138,7 +172,7 @@ region: eu-west-1
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `profile` | string | *(prompted)* | AWS CLI profile. If omitted and no `--profile` / `AWS_PROFILE`, lists available profiles and asks you to choose. |
+| `profile` | string | *(auto-detect)* | AWS CLI profile to use. When omitted (and no `--profile` / `AWS_PROFILE`), the tool checks for active sessions automatically and only prompts if none are found. |
 | `environments` | list | *(empty — generic mode)* | Defines the selectable environments. Each entry has a `name` (required) and an optional `confirm` flag. When present, enables environment-based cluster/service filtering. |
 | `environments[].name` | string | — | Environment name (e.g. `staging`, `production`, `dev`). Clusters ending with `-{name}` are shown for this environment. |
 | `environments[].confirm` | bool | `false` | When `true`, the user must type `yes` before connecting. Useful for production or other sensitive environments. |
@@ -209,7 +243,7 @@ All settings can be passed as flags or environment variables. Flags take precede
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
-| `--profile` | `AWS_PROFILE` | *(prompted)* | AWS CLI / SSO profile; if unset, lists profiles and asks you to choose |
+| `--profile` | `AWS_PROFILE` | *(auto-detect)* | AWS CLI / SSO profile. If not set, auto-detects active sessions; prompts only if none found. |
 | `--region` | `AWS_REGION`, `AWS_DEFAULT_REGION` | *(from profile)* | AWS region |
 | `--command` | `COMMAND` | `/bin/sh` | Command to run in the container |
 | `--config` | `ECS_CONNECT_CONFIG` | *(auto-discover)* | Path to config file |
@@ -220,7 +254,7 @@ All settings can be passed as flags or environment variables. Flags take precede
 ## Prerequisites
 
 - **Go 1.22+** (build only)
-- **AWS CLI** configured with your SSO profile
+- **AWS CLI** configured with your SSO profile(s)
 - **session-manager-plugin** — [install guide](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
 - **ECS Exec** enabled on the target services/tasks
 - IAM permissions for `ecs:ExecuteCommand`, `ecs:DescribeTasks`, `ecs:ListTasks`, `ecs:ListClusters`, `ecs:ListServices`, `ecs:DescribeServices`, `sts:GetCallerIdentity`, and SSM session access
@@ -229,7 +263,7 @@ All settings can be passed as flags or environment variables. Flags take precede
 
 ```
 ecs-connect/
-├── main.go                  Entry point, config, banner, session exec
+├── main.go                  Entry point, config, auth, banner, session exec
 ├── internal/
 │   ├── cloud/
 │   │   ├── cloud.go         AWS SDK v2 client (STS + ECS operations)
@@ -242,6 +276,7 @@ ecs-connect/
 │   └── tui/
 │       ├── model.go         Bubbletea model, Init, Update, commands
 │       └── view.go          View rendering, lipgloss styles, preview panel
+├── .ecs-connect.yaml        Example config file
 ├── .goreleaser.yaml         GoReleaser build config
 ├── go.mod
 └── go.sum
