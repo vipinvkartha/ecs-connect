@@ -80,30 +80,112 @@ When a `.ecs-connect.yaml` config file is present with environments defined, the
 
 ## Configuration
 
-Create a `.ecs-connect.yaml` file in your project root or home directory to enable environment-based naming:
+Create a `.ecs-connect.yaml` file to customise the tool for your team. Without this file the tool runs in **generic mode** — all clusters and services are listed as-is with `/bin/sh` as the default command.
+
+### Config file lookup order
+
+1. `--config` flag (or `ECS_CONNECT_CONFIG` env var) — explicit path
+2. `.ecs-connect.yaml` or `.ecs-connect.yml` in the current working directory
+3. `~/.ecs-connect.yaml` or `~/.ecs-connect.yml` in your home directory
+
+If none are found the tool uses built-in defaults (generic mode).
+
+### Value precedence
+
+When the same setting can come from multiple sources, the first match wins:
+
+**CLI flag → environment variable → config file → built-in default**
+
+For example, `--command /bin/bash` overrides `COMMAND` env var, which overrides the `command:` field in the config file.
+
+### Full config reference
 
 ```yaml
-# Environment names (enables the environment selection step)
+# ──────────────────────────────────────────────────────────────────────
+# .ecs-connect.yaml — all fields are optional
+# ──────────────────────────────────────────────────────────────────────
+
+# environments — list of environment names.
+# When present, enables the environment selection step and
+# cluster/service naming conventions ({app}-{env}).
+# When absent, the tool lists all clusters and services directly.
 environments:
   - name: staging
   - name: production
-    confirm: true  # require typing "yes" before connecting
+    confirm: true          # require typing "yes" before connecting
 
-# Slug shown for services matching {app}-{env} (default: "web")
+# default_slug — friendly name shown for the "bare" service
+# (the one matching {app}-{env} with no slug segment).
+# Default: "web"
 default_slug: web
 
-# Default command and region (overridden by flags/env vars)
+# command — default command to execute inside the container.
+# Overridden by --command flag or COMMAND env var.
+# Built-in default (without config file): /bin/sh
+command: "bundle exec rails c -- --noautocomplete"
+
+# region — AWS region to use for API calls.
+# Overridden by --region flag, AWS_REGION, or AWS_DEFAULT_REGION env vars.
+# Built-in default (without config file): resolved from your AWS profile.
+region: eu-west-1
+```
+
+### Config field details
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `environments` | list | *(empty — generic mode)* | Defines the selectable environments. Each entry has a `name` (required) and an optional `confirm` flag. When present, enables environment-based cluster/service filtering. |
+| `environments[].name` | string | — | Environment name (e.g. `staging`, `production`, `dev`). Clusters ending with `-{name}` are shown for this environment. |
+| `environments[].confirm` | bool | `false` | When `true`, the user must type `yes` before connecting. Useful for production or other sensitive environments. |
+| `default_slug` | string | `web` | The slug label assigned to services that match `{app}-{env}` exactly (no slug segment in the name). |
+| `command` | string | `/bin/sh` | The command to execute inside the container. Common values: `/bin/bash`, `bundle exec rails c -- --noautocomplete`, `python manage.py shell`. |
+| `region` | string | *(from profile)* | AWS region for all API calls. When omitted, the region is resolved from `--region` flag, `AWS_REGION` env var, or the profile's region in `~/.aws/config`. |
+
+### Example configs
+
+**Minimal — just set the command and region:**
+
+```yaml
+command: /bin/bash
+region: us-west-2
+```
+
+**Rails app with staging + production:**
+
+```yaml
+environments:
+  - name: staging
+  - name: production
+    confirm: true
+
 command: "bundle exec rails c -- --noautocomplete"
 region: eu-west-1
 ```
 
-**Config file resolution order:** `--config` flag → `.ecs-connect.yaml` in cwd → `~/.ecs-connect.yaml` → built-in defaults.
+**Python/Django app with three environments:**
 
-**Value precedence:** CLI flag → environment variable → config file → built-in default.
+```yaml
+environments:
+  - name: dev
+  - name: staging
+  - name: production
+    confirm: true
+
+default_slug: api
+command: "python manage.py shell"
+region: us-east-1
+```
+
+**Node.js app — just a shell, no naming conventions:**
+
+```yaml
+command: /bin/bash
+region: ap-southeast-1
+```
 
 ### Naming conventions (config mode)
 
-When environments are configured, the tool uses these naming patterns to discover and display resources:
+When `environments` are configured, the tool uses these naming patterns to discover and display resources:
 
 | Concept | Pattern | Example |
 |---|---|---|
@@ -111,6 +193,8 @@ When environments are configured, the tool uses these naming patterns to discove
 | App group | cluster minus env suffix | `home` |
 | Service (default slug) | `{app}-{env}` | `home-staging` → slug **web** |
 | Service (other) | `{app}-{slug}-{env}` | `home-worker-staging` → slug **worker** |
+
+The `default_slug` config field controls what the "bare" service (`{app}-{env}`) is displayed as. Most teams call it `web`, but you can set it to `api`, `main`, or anything else.
 
 ## Flags and environment variables
 
