@@ -90,6 +90,19 @@ func (c *Client) ListServices(ctx context.Context, cluster string) ([]string, er
 	return names, nil
 }
 
+// DeploymentInfo holds details about a single ECS service deployment.
+type DeploymentInfo struct {
+	ID           string
+	Status       string // PRIMARY, ACTIVE, INACTIVE
+	RolloutState string // IN_PROGRESS, COMPLETED, FAILED
+	TaskDef      string
+	DesiredCount int32
+	RunningCount int32
+	FailedTasks  int32
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
 // ServiceInfo holds the relevant fields from an ECS DescribeServices response.
 type ServiceInfo struct {
 	Status       string
@@ -97,6 +110,7 @@ type ServiceInfo struct {
 	RunningCount int32
 	PendingCount int32
 	TaskDef      string
+	Deployments  []DeploymentInfo
 }
 
 // DescribeService returns status and count details for a single service.
@@ -112,12 +126,49 @@ func (c *Client) DescribeService(ctx context.Context, cluster, service string) (
 		return nil, fmt.Errorf("service %q not found", service)
 	}
 	s := out.Services[0]
+
+	deps := s.Deployments
+	sort.Slice(deps, func(i, j int) bool {
+		ti, tj := time.Time{}, time.Time{}
+		if deps[i].CreatedAt != nil {
+			ti = *deps[i].CreatedAt
+		}
+		if deps[j].CreatedAt != nil {
+			tj = *deps[j].CreatedAt
+		}
+		return ti.After(tj)
+	})
+	if len(deps) > 10 {
+		deps = deps[:10]
+	}
+
+	var deployments []DeploymentInfo
+	for _, d := range deps {
+		di := DeploymentInfo{
+			ID:           aws.ToString(d.Id),
+			Status:       aws.ToString(d.Status),
+			RolloutState: string(d.RolloutState),
+			TaskDef:      arnName(aws.ToString(d.TaskDefinition)),
+			DesiredCount: d.DesiredCount,
+			RunningCount: d.RunningCount,
+			FailedTasks:  d.FailedTasks,
+		}
+		if d.CreatedAt != nil {
+			di.CreatedAt = *d.CreatedAt
+		}
+		if d.UpdatedAt != nil {
+			di.UpdatedAt = *d.UpdatedAt
+		}
+		deployments = append(deployments, di)
+	}
+
 	return &ServiceInfo{
 		Status:       aws.ToString(s.Status),
 		DesiredCount: s.DesiredCount,
 		RunningCount: s.RunningCount,
 		PendingCount: s.PendingCount,
 		TaskDef:      arnName(aws.ToString(s.TaskDefinition)),
+		Deployments:  deployments,
 	}, nil
 }
 

@@ -88,6 +88,8 @@ func parseFlags() cliConfig {
 		"ECS cluster name (skip interactive selection)")
 	flag.StringVar(&c.Service, "service", "",
 		"ECS service name (skip interactive selection)")
+
+	flag.Usage = printHelp
 	flag.Parse()
 
 	flag.Visit(func(f *flag.Flag) {
@@ -293,19 +295,74 @@ func runSSOLogin(profile string) error {
 // Banner / summary
 // -------------------------------------------------------------------------
 
+func printHelp() {
+	fmt.Print(`
+ecs-connect — interactive ECS Exec into a running task
+
+Usage:
+  ecs-connect [flags]
+
+Flags:
+  --profile <name>    AWS CLI profile (env: AWS_PROFILE)
+                      If not set, auto-detects active sessions.
+                      Prompts to choose a profile only if none found.
+
+  --region <region>   AWS region (env: AWS_REGION, AWS_DEFAULT_REGION)
+                      Defaults to the region in your AWS profile.
+
+  --command <cmd>     Command to run in the container (env: COMMAND)
+                      Default: /bin/sh
+
+  --config <path>     Path to .ecs-connect.yaml config file (env: ECS_CONNECT_CONFIG)
+                      Auto-discovers from current dir or home dir if not set.
+
+  --cluster <name>    ECS cluster name — skip interactive cluster selection.
+
+  --service <name>    ECS service name — skip interactive service selection.
+
+  --quiet             Suppress the startup banner (env: ECS_CONNECT_QUIET=1)
+
+  --help              Show this help message.
+
+Authentication:
+  1. If --profile / AWS_PROFILE / config profile is set → uses that profile.
+  2. Otherwise, checks the default credential chain (env vars, default profile).
+  3. If that fails, scans all profiles in ~/.aws/config for an active session.
+  4. If no session found, prompts you to pick a profile and runs aws sso login.
+
+Config file (.ecs-connect.yaml):
+  Looked up in this order:
+    1. --config flag or ECS_CONNECT_CONFIG env var
+    2. .ecs-connect.yaml in the current directory
+    3. ~/.ecs-connect.yaml in your home directory
+
+  Fields: profile, environments, default_slug, command, region
+  See README.md for full reference.
+
+Examples:
+  ecs-connect                                      Interactive wizard
+  ecs-connect --profile prod                       Use specific profile
+  ecs-connect --cluster my-cluster --service web   Skip pickers
+  ecs-connect --command /bin/bash                   Use bash instead of sh
+  AWS_PROFILE=prod ecs-connect                     Profile via env var
+
+`)
+}
+
 func printBanner() {
 	fmt.Println(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   ecs-connect — interactive ECS Exec into a running task
 
   Flags
-    --profile    AWS CLI profile     (env: AWS_PROFILE; prompted if unset)
+    --profile    AWS CLI profile     (env: AWS_PROFILE; auto-detect if unset)
     --region     AWS region          (env: AWS_REGION; from profile if unset)
     --command    Container command   (env: COMMAND, default: /bin/sh)
     --config     Config file path    (env: ECS_CONNECT_CONFIG)
     --cluster    Skip cluster picker
     --service    Skip service picker
     --quiet      Suppress banner     (env: ECS_CONNECT_QUIET=1)
+    --help       Show all options
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
 }
 

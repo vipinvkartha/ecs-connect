@@ -74,13 +74,13 @@ When prompted, the profile picker looks like this:
 │ or prompt  │  │ my-cluster-b     │  │ my-service-b │  │ or pick  │ │ or pick  │
 │ + SSO login│  └──────────────────┘  │ my-service-c │  └──────────┘ └──────────┘
 └────────────┘                        └──────────────┘
-                                        ▲ preview panel
-                                        │ shows service health
+                                        ▲ preview panel shows service
+                                        │ health + recent deployments
 ```
 
 1. **Auth** — resolves credentials automatically (see authentication flow above). Only prompts if no active session is found anywhere.
 2. **Select cluster** — lists all ECS clusters in the account.
-3. **Select service** — lists all services in the selected cluster with a live preview panel.
+3. **Select service** — lists all services in the selected cluster with a live preview panel showing service health and the last 10 deployments (rollout state, task definition, age, running/desired counts).
 4. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
 5. **Select container** — auto-selects if the task has a single container; prompts otherwise.
 6. **Connect** — calls `ExecuteCommand` and hands off to `session-manager-plugin`.
@@ -96,15 +96,14 @@ When a `.ecs-connect.yaml` config file is present with environments defined, the
 │ or prompt  │ │ production │   │ auth-staging   │  │ worker     │  │ or pick  │
 │ + SSO login│ └────────────┘   └────────────────┘  │ sidekiq    │  └──────────┘
 └────────────┘                                      └────────────┘
-                                                      ▲ preview panel
-                                                      │ shows status, desired/running
-                                                      │ counts, and task definition
+                                                      ▲ preview panel shows service
+                                                      │ health + recent deployments
 ```
 
 1. **Auth** — same auto-detect flow as default mode.
 2. **Select environment** — from the environments listed in the config file.
 3. **Select cluster** — lists clusters ending with `-{env}` (e.g. `home-staging`).
-4. **Select service** — maps ECS services to friendly slugs (`web`, `worker`, …) with a live preview panel showing service health.
+4. **Select service** — maps ECS services to friendly slugs (`web`, `worker`, …) with a live preview panel showing service health and recent deployments.
 5. **Confirmation** — if the selected environment has `confirm: true`, you must type `yes` to proceed.
 6. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
 7. **Select container** — auto-selects if the task has a single container; prompts otherwise.

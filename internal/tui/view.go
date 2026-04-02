@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"ecs-connect/internal/cloud"
 
@@ -39,7 +40,7 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("62")).
 			Padding(1, 2).
-			Width(36)
+			Width(52)
 
 	breadcrumbStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("242")).
@@ -202,8 +203,65 @@ func formatServiceInfo(info *cloud.ServiceInfo) string {
 	}
 	b.WriteString(fmt.Sprintf("  Running   %s\n", runStr))
 	b.WriteString(fmt.Sprintf("  Pending   %d\n", info.PendingCount))
-	b.WriteString(fmt.Sprintf("  TaskDef   %s", info.TaskDef))
+	b.WriteString(fmt.Sprintf("  TaskDef   %s\n", info.TaskDef))
+
+	if len(info.Deployments) > 0 {
+		b.WriteString("\n")
+		b.WriteString(titleStyle.Render("Recent Deployments"))
+		b.WriteString("\n\n")
+		for _, d := range info.Deployments {
+			b.WriteString(formatDeploymentLine(d))
+			b.WriteString("\n")
+		}
+	}
+
 	return b.String()
+}
+
+var (
+	inProgressStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("220"))
+)
+
+func formatDeploymentLine(d cloud.DeploymentInfo) string {
+	var icon, state string
+	switch d.RolloutState {
+	case "COMPLETED":
+		icon = successStyle.Render("●")
+		state = successStyle.Render("DONE")
+	case "IN_PROGRESS":
+		icon = inProgressStyle.Render("●")
+		state = inProgressStyle.Render("IN_PROG")
+	case "FAILED":
+		icon = warningStyle.Render("✗")
+		state = warningStyle.Render("FAILED")
+	default:
+		icon = dimStyle.Render("○")
+		state = dimStyle.Render(d.RolloutState)
+	}
+
+	age := relativeTime(d.CreatedAt)
+	counts := fmt.Sprintf("%d/%d", d.RunningCount, d.DesiredCount)
+
+	return fmt.Sprintf("  %s %-7s %-16s %6s %s",
+		icon, state, d.TaskDef, age, dimStyle.Render(counts))
+}
+
+func relativeTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 func (m model) renderConfirm() string {
