@@ -9,6 +9,7 @@ import (
 
 	"ecs-connect/internal/cloud"
 	"ecs-connect/internal/config"
+	"ecs-connect/internal/ddb"
 	"ecs-connect/internal/naming"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -42,9 +43,9 @@ type Options struct {
 	Service string         // pre-selected service (skip picker)
 }
 
-// Run launches the interactive TUI wizard and returns the collected result
-// plus the AWS client used during discovery (reusable for exec).
-func Run(opts Options) (*Result, *cloud.Client, error) {
+// Run launches the interactive TUI wizard and returns an outcome
+// (ECS exec target or DynamoDB query result) plus the AWS client.
+func Run(opts Options) (*Outcome, *cloud.Client, error) {
 	m := newModel(opts)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	final, err := p.Run()
@@ -58,7 +59,7 @@ func Run(opts Options) (*Result, *cloud.Client, error) {
 	if fm.err != nil {
 		return nil, nil, fm.err
 	}
-	return fm.result, fm.client, nil
+	return fm.outcome, fm.client, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,8 @@ type step int
 
 const (
 	stepCheckAuth step = iota
+	stepChooseBackend
+	stepLoadDynamoClient
 	stepSelectEnv
 	stepLoadClusters
 	stepSelectCluster
@@ -78,6 +81,14 @@ const (
 	stepLoadTasks
 	stepSelectTask
 	stepSelectContainer
+	stepDynamoPickKeyword
+	stepLoadDynamoTables
+	stepSelectDynamoTable
+	stepLoadDynamoDescribe
+	stepDynamoEnterPK
+	stepDynamoEnterSK
+	stepLoadDynamoQuery
+	stepDynamoShowResults
 	stepDone
 )
 
@@ -99,6 +110,17 @@ type (
 		err  error
 	}
 	errMsg struct{ err error }
+
+	dynamoReadyMsg    struct{ c *ddb.Client }
+	dynamoTablesMsg   []string
+	dynamoDescribeMsg struct {
+		schema *ddb.KeySchema
+		err    error
+	}
+	dynamoQueryMsg struct {
+		json string
+		err  error
+	}
 )
 
 // ---------------------------------------------------------------------------
@@ -155,9 +177,26 @@ type model struct {
 	container   string
 	authARN     string
 
+	dynamoMode          bool
+	backendCursor       int
+	ddbClient           *ddb.Client
+	dynamoKeywordItems  []string
+	dynamoKeywordCursor int
+	dynamoTableItems    []string
+	dynamoTableCursor   int
+	dynamoTableName     string
+	dynamoPKName        string
+	dynamoPKType        string
+	dynamoSKName        string
+	dynamoSKType        string
+	dynamoPKInput       textinput.Model
+	dynamoSKInput       textinput.Model
+	dynamoViewport      viewport.Model
+	dynamoResultJSON    string
+
 	cancelled bool
 	err       error
-	result    *Result
+	outcome   *Outcome
 }
 
 func newModel(opts Options) model {
@@ -169,16 +208,25 @@ func newModel(opts Options) model {
 	ti.Placeholder = "type 'yes' to continue"
 	ti.CharLimit = 3
 
+	pki := textinput.New()
+	ski := textinput.New()
+
 	vp := viewport.New(0, 0)
 	vp.MouseWheelEnabled = false
+
+	dvp := viewport.New(0, 0)
+	dvp.MouseWheelEnabled = false
 
 	m := model{
 		client:          opts.Client,
 		cfg:             opts.Config,
 		spinner:         s,
 		confirmInput:    ti,
+		dynamoPKInput:   pki,
+		dynamoSKInput:   ski,
 		previewCache:    make(map[string]*cloud.ServiceInfo),
 		previewViewport: vp,
+		dynamoViewport:  dvp,
 		profile:         opts.Client.Profile,
 		cluster:         opts.Cluster,
 		service:         opts.Service,
@@ -221,10 +269,42 @@ func (m *model) afterAuth() (step, tea.Cmd) {
 		return stepLoadServices, m.loadServices()
 	}
 	if m.useNaming() {
+		if env := m.matchingConfiguredDefaultEnv(); env != "" {
+			m.environment = env
+			if m.shouldConfirm() {
+				m.confirmInput.Focus()
+				return stepConfirm, textinput.Blink
+			}
+			m.loadingMsg = "Loading clusters..."
+			return stepLoadClusters, m.loadClusters()
+		}
 		return stepSelectEnv, nil
 	}
 	m.loadingMsg = "Loading clusters..."
 	return stepLoadClusters, m.loadClusters()
+}
+
+func (m model) matchingConfiguredDefaultEnv() string {
+	if m.cfg == nil || m.cfg.Defaults == nil {
+		return ""
+	}
+	want := strings.TrimSpace(m.cfg.Defaults.Environment)
+	if want == "" {
+		return ""
+	}
+	for _, name := range m.envItems {
+		if name == want {
+			return want
+		}
+	}
+	return ""
+}
+
+func defaultsBackend(cfg *config.Config) string {
+	if cfg == nil || cfg.Defaults == nil {
+		return ""
+	}
+	return cfg.Defaults.Backend
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +333,8 @@ func (m model) applyFilter(items []string) []string {
 func (m model) isListStep() bool {
 	switch m.step {
 	case stepSelectEnv, stepSelectCluster,
-		stepSelectService, stepSelectTask, stepSelectContainer:
+		stepSelectService, stepSelectTask, stepSelectContainer,
+		stepSelectDynamoTable:
 		return true
 	}
 	return false
@@ -280,6 +361,18 @@ func (m *model) clampCurrentCursor() {
 	case stepSelectContainer:
 		if n := len(m.applyFilter(m.containerItems)); m.containerCursor >= n {
 			m.containerCursor = max(0, n-1)
+		}
+	case stepChooseBackend:
+		if m.backendCursor > 1 {
+			m.backendCursor = 1
+		}
+	case stepDynamoPickKeyword:
+		if n := len(m.dynamoKeywordItems); m.dynamoKeywordCursor >= n {
+			m.dynamoKeywordCursor = max(0, n-1)
+		}
+	case stepSelectDynamoTable:
+		if n := len(m.applyFilter(m.dynamoTableItems)); m.dynamoTableCursor >= n {
+			m.dynamoTableCursor = max(0, n-1)
 		}
 	}
 }
@@ -350,6 +443,147 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(m.spinner.Tick, m.checkAuth())
 }
 
+// tryWizardBack moves one step backward in the wizard when the user presses
+// b (only when the list filter is inactive). Returns ok=true if handled.
+func (m model) tryWizardBack() (model, tea.Cmd, bool) {
+	switch m.step {
+	case stepCheckAuth,
+		stepLoadDynamoClient, stepLoadDynamoTables, stepLoadDynamoDescribe, stepLoadDynamoQuery,
+		stepLoadClusters, stepLoadServices, stepLoadTasks:
+		return m, nil, false
+
+	case stepChooseBackend:
+		m.cancelled = true
+		return m, tea.Quit, true
+
+	case stepSelectEnv:
+		m.resetFilter()
+		m.environment = ""
+		if m.dynamoMode {
+			m.ddbClient = nil
+			m.dynamoMode = false
+		}
+		m.backendCursor = 0
+		m.step = stepChooseBackend
+		return m, nil, true
+
+	case stepDynamoPickKeyword:
+		m.resetFilter()
+		m.environment = ""
+		m.dynamoMode = false
+		m.ddbClient = nil
+		m.backendCursor = 0
+		m.step = stepChooseBackend
+		return m, nil, true
+
+	case stepSelectDynamoTable:
+		m.resetFilter()
+		m.dynamoTableName = ""
+		if m.useNaming() {
+			m.environment = ""
+			m.step = stepSelectEnv
+			return m, nil, true
+		}
+		m.step = stepDynamoPickKeyword
+		return m, nil, true
+
+	case stepDynamoEnterPK:
+		m.dynamoPKInput.Blur()
+		m.dynamoPKInput.SetValue("")
+		m.dynamoSKInput.SetValue("")
+		m.step = stepSelectDynamoTable
+		return m, nil, true
+
+	case stepDynamoEnterSK:
+		m.dynamoSKInput.Blur()
+		m.dynamoSKInput.SetValue("")
+		m.dynamoPKInput.Focus()
+		m.step = stepDynamoEnterPK
+		return m, textinput.Blink, true
+
+	case stepDynamoShowResults:
+		m.dynamoPKInput.Blur()
+		m.dynamoSKInput.Blur()
+		m.dynamoTableCursor = 0
+		for i, t := range m.dynamoTableItems {
+			if t == m.dynamoTableName {
+				m.dynamoTableCursor = i
+				break
+			}
+		}
+		m.step = stepSelectDynamoTable
+		return m, nil, true
+
+	case stepConfirm:
+		m.confirmInput.SetValue("")
+		m.confirmInput.Blur()
+		if m.dynamoMode {
+			m.step = stepSelectEnv
+			return m, nil, true
+		}
+		m.step = stepSelectService
+		mp := &m
+		cmd := mp.updateServicePreview()
+		m = *mp
+		m = m.syncPreviewForService(m.currentServiceKey(), true)
+		return m, cmd, true
+
+	case stepSelectCluster:
+		m.resetFilter()
+		m.cluster = ""
+		m.appGroup = ""
+		if m.useNaming() {
+			m.environment = ""
+			m.step = stepSelectEnv
+			return m, nil, true
+		}
+		m.backendCursor = 0
+		m.step = stepChooseBackend
+		return m, nil, true
+
+	case stepSelectService:
+		m.resetFilter()
+		m.slug = ""
+		m.service = ""
+		m.previewScrollKey = ""
+		m.currentPreview = nil
+		m.previewLoading = false
+		if len(m.clusterItems) > 0 {
+			m.step = stepSelectCluster
+			return m, nil, true
+		}
+		m.loadingMsg = "Loading clusters..."
+		m.step = stepLoadClusters
+		return m, m.loadClusters(), true
+
+	case stepSelectTask:
+		m.resetFilter()
+		m.taskARN = ""
+		m.taskShortID = ""
+		m.container = ""
+		if len(m.serviceItems) > 0 {
+			m.step = stepSelectService
+			mp := &m
+			cmd := mp.updateServicePreview()
+			m = *mp
+			m = m.syncPreviewForService(m.currentServiceKey(), true)
+			return m, cmd, true
+		}
+		m.loadingMsg = "Loading services..."
+		m.step = stepLoadServices
+		return m, m.loadServices(), true
+
+	case stepSelectContainer:
+		m.resetFilter()
+		m.container = ""
+		m.step = stepSelectTask
+		return m, nil, true
+
+	default:
+		return m, nil, false
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Update
 // ---------------------------------------------------------------------------
@@ -361,6 +595,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m = m.resizePreviewViewportOnly()
+		m = m.resizeDynamoViewport()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -381,9 +616,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+			if m.step == stepDynamoShowResults {
+				return m, tea.Quit
+			}
 			if m.step != stepConfirm {
 				m.cancelled = true
 				return m, tea.Quit
+			}
+		}
+
+		if msg.String() == "b" && !m.filterActive {
+			if nm, cmd, ok := m.tryWizardBack(); ok {
+				return nm, cmd
+			}
+		}
+
+		if m.step == stepDynamoShowResults && !m.filterActive {
+			switch msg.String() {
+			case "[":
+				vp := m.dynamoViewport
+				vp.ScrollUp(3)
+				m.dynamoViewport = vp
+				return m, nil
+			case "]":
+				vp := m.dynamoViewport
+				vp.ScrollDown(3)
+				m.dynamoViewport = vp
+				return m, nil
+			case "r":
+				m.dynamoPKInput.SetValue("")
+				m.dynamoSKInput.SetValue("")
+				m.dynamoPKInput.Placeholder = fmt.Sprintf("%s (%s)", m.dynamoPKName, m.dynamoPKType)
+				m.dynamoSKInput.Blur()
+				m.dynamoPKInput.Focus()
+				m.step = stepDynamoEnterPK
+				return m, textinput.Blink
+			case "e":
+				if m.dynamoSKName != "" {
+					m.dynamoPKInput.Blur()
+					m.dynamoSKInput.Focus()
+					m.step = stepDynamoEnterSK
+				} else {
+					m.dynamoSKInput.Blur()
+					m.dynamoPKInput.Focus()
+					m.step = stepDynamoEnterPK
+				}
+				return m, textinput.Blink
 			}
 		}
 
@@ -446,16 +724,98 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch m.step {
+		case stepChooseBackend:
+			if listNav(msg, &m.backendCursor, 2) {
+				if m.backendCursor == 0 {
+					m.dynamoMode = false
+					next, cmd := m.afterAuth()
+					m.step = next
+					return m, cmd
+				}
+				m.dynamoMode = true
+				m.loadingMsg = "Connecting to DynamoDB..."
+				m.step = stepLoadDynamoClient
+				return m, m.initDynamoClient()
+			}
+
 		case stepSelectEnv:
 			visible := m.applyFilter(m.envItems)
 			if listNav(msg, &m.envCursor, len(visible)) {
 				if len(visible) > 0 && m.envCursor < len(visible) {
 					m.environment = visible[m.envCursor]
 					m.resetFilter()
+					if m.dynamoMode {
+						if m.shouldConfirm() {
+							m.step = stepConfirm
+							m.confirmInput.Focus()
+							return m, textinput.Blink
+						}
+						m.loadingMsg = "Loading DynamoDB tables..."
+						m.step = stepLoadDynamoTables
+						return m, m.loadDynamoTables()
+					}
 					m.loadingMsg = "Loading clusters..."
 					m.step = stepLoadClusters
 					return m, m.loadClusters()
 				}
+			}
+
+		case stepDynamoPickKeyword:
+			if listNav(msg, &m.dynamoKeywordCursor, len(m.dynamoKeywordItems)) {
+				if len(m.dynamoKeywordItems) > 0 && m.dynamoKeywordCursor < len(m.dynamoKeywordItems) {
+					m.environment = m.dynamoKeywordItems[m.dynamoKeywordCursor]
+					m.resetFilter()
+					m.loadingMsg = "Loading DynamoDB tables..."
+					m.step = stepLoadDynamoTables
+					return m, m.loadDynamoTables()
+				}
+			}
+
+		case stepSelectDynamoTable:
+			visible := m.applyFilter(m.dynamoTableItems)
+			if listNav(msg, &m.dynamoTableCursor, len(visible)) {
+				if len(visible) > 0 && m.dynamoTableCursor < len(visible) {
+					m.dynamoTableName = visible[m.dynamoTableCursor]
+					m.resetFilter()
+					m.loadingMsg = "Loading table keys..."
+					m.step = stepLoadDynamoDescribe
+					return m, m.loadDynamoKeySchema()
+				}
+			}
+
+		case stepDynamoEnterPK:
+			switch msg.String() {
+			case "enter":
+				if strings.TrimSpace(m.dynamoPKInput.Value()) == "" {
+					return m, nil
+				}
+				if m.dynamoSKName != "" {
+					m.dynamoSKInput.SetValue("")
+					m.dynamoSKInput.Placeholder = fmt.Sprintf("%s (%s, optional)", m.dynamoSKName, m.dynamoSKType)
+					m.dynamoPKInput.Blur()
+					m.dynamoSKInput.Focus()
+					m.step = stepDynamoEnterSK
+					return m, textinput.Blink
+				}
+				m.loadingMsg = "Querying table..."
+				m.step = stepLoadDynamoQuery
+				return m, m.runDynamoQuery()
+			default:
+				var cmd tea.Cmd
+				m.dynamoPKInput, cmd = m.dynamoPKInput.Update(msg)
+				return m, cmd
+			}
+
+		case stepDynamoEnterSK:
+			switch msg.String() {
+			case "enter":
+				m.loadingMsg = "Querying table..."
+				m.step = stepLoadDynamoQuery
+				return m, m.runDynamoQuery()
+			default:
+				var cmd tea.Cmd
+				m.dynamoSKInput, cmd = m.dynamoSKInput.Update(msg)
+				return m, cmd
 			}
 
 		case stepSelectCluster:
@@ -523,6 +883,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "enter":
 				if m.confirmInput.Value() == "yes" {
+					if m.dynamoMode {
+						m.loadingMsg = "Loading DynamoDB tables..."
+						m.step = stepLoadDynamoTables
+						return m, m.loadDynamoTables()
+					}
 					m.loadingMsg = "Loading tasks..."
 					m.step = stepLoadTasks
 					return m, m.loadTasks()
@@ -580,9 +945,114 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case authOKMsg:
 		m.authARN = string(msg)
-		next, cmd := m.afterAuth()
-		m.step = next
-		return m, cmd
+		m.backendCursor = 0
+		backend := config.NormalizeBackend(defaultsBackend(m.cfg))
+		switch backend {
+		case "dynamo":
+			m.dynamoMode = true
+			m.loadingMsg = "Connecting to DynamoDB..."
+			m.step = stepLoadDynamoClient
+			return m, m.initDynamoClient()
+		case "ecs":
+			m.dynamoMode = false
+			next, cmd := m.afterAuth()
+			m.step = next
+			return m, cmd
+		default:
+			m.step = stepChooseBackend
+			return m, nil
+		}
+
+	case dynamoReadyMsg:
+		m.ddbClient = msg.c
+		if m.useNaming() {
+			if env := m.matchingConfiguredDefaultEnv(); env != "" {
+				m.environment = env
+				if m.shouldConfirm() {
+					m.confirmInput.Focus()
+					m.step = stepConfirm
+					return m, textinput.Blink
+				}
+				m.loadingMsg = "Loading DynamoDB tables..."
+				m.step = stepLoadDynamoTables
+				return m, m.loadDynamoTables()
+			}
+			m.step = stepSelectEnv
+			return m, nil
+		}
+		kw := ""
+		if m.cfg != nil && m.cfg.Defaults != nil {
+			kw = strings.TrimSpace(m.cfg.Defaults.DynamoKeyword)
+		}
+		if kw != "" {
+			m.environment = kw
+			m.loadingMsg = "Loading DynamoDB tables..."
+			m.step = stepLoadDynamoTables
+			return m, m.loadDynamoTables()
+		}
+		m.dynamoKeywordItems = []string{"staging", "production"}
+		m.dynamoKeywordCursor = 0
+		m.step = stepDynamoPickKeyword
+		return m, nil
+
+	case dynamoTablesMsg:
+		filtered := ddb.FilterTablesByKeyword([]string(msg), m.environment)
+		if len(filtered) == 0 {
+			m.err = fmt.Errorf("no DynamoDB tables contain %q in their name", m.environment)
+			return m, tea.Quit
+		}
+		m.dynamoTableItems = filtered
+		wantTable := ""
+		if m.cfg != nil && m.cfg.Defaults != nil {
+			wantTable = strings.TrimSpace(m.cfg.Defaults.DynamoTable)
+		}
+		if wantTable != "" {
+			for i, t := range filtered {
+				if t == wantTable {
+					m.dynamoTableName = wantTable
+					m.dynamoTableCursor = i
+					m.loadingMsg = "Loading table keys..."
+					m.step = stepLoadDynamoDescribe
+					return m, m.loadDynamoKeySchema()
+				}
+			}
+		}
+		m.dynamoTableCursor = 0
+		m.step = stepSelectDynamoTable
+		return m, nil
+
+	case dynamoDescribeMsg:
+		if msg.err != nil {
+			m.err = fmt.Errorf("describe table: %w", msg.err)
+			return m, tea.Quit
+		}
+		ks := msg.schema
+		m.dynamoPKName = ks.PartitionName
+		m.dynamoPKType = ks.PartitionType
+		m.dynamoSKName = ks.SortName
+		m.dynamoSKType = ks.SortType
+		m.dynamoPKInput.SetValue("")
+		m.dynamoPKInput.Placeholder = fmt.Sprintf("%s (%s)", m.dynamoPKName, m.dynamoPKType)
+		m.dynamoPKInput.Focus()
+		m.step = stepDynamoEnterPK
+		return m, textinput.Blink
+
+	case dynamoQueryMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, tea.Quit
+		}
+		m.outcome = &Outcome{
+			Mode: ModeDynamoDB,
+			Dynamo: &DynamoOutcome{
+				Table: m.dynamoTableName,
+				JSON:  msg.json,
+			},
+		}
+		m.dynamoResultJSON = msg.json
+		m = m.syncDynamoResultViewport()
+		m.step = stepDynamoShowResults
+		return m, nil
 
 	case authErrMsg:
 		m.err = fmt.Errorf(
@@ -605,6 +1075,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.clusterItems = items
+		if want := strings.TrimSpace(m.cluster); want != "" {
+			for _, c := range items {
+				if c == want {
+					m.cluster = c
+					m.resetFilter()
+					if m.useNaming() && m.environment != "" {
+						m.appGroup = naming.AppGroup(m.cluster, m.environment)
+					}
+					m.loadingMsg = "Loading services..."
+					m.step = stepLoadServices
+					return m, m.loadServices()
+				}
+			}
+		}
 		m.step = stepSelectCluster
 		return m, nil
 
@@ -617,6 +1101,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			m.serviceItems = slugs
+			if want := strings.TrimSpace(m.service); want != "" {
+				for _, slug := range slugs {
+					svcName := naming.SlugToServiceName(slug, m.appGroup, m.environment, m.defaultSlug())
+					if svcName == want || slug == want {
+						m.slug = slug
+						m.service = svcName
+						m.resetFilter()
+						if m.shouldConfirm() {
+							m.confirmInput.Focus()
+							m.step = stepConfirm
+							return m, textinput.Blink
+						}
+						m.loadingMsg = "Loading tasks..."
+						m.step = stepLoadTasks
+						return m, m.loadTasks()
+					}
+				}
+			}
 		} else {
 			services := []string(msg)
 			if len(services) == 0 {
@@ -624,6 +1126,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			m.serviceItems = services
+			if want := strings.TrimSpace(m.service); want != "" {
+				for _, s := range services {
+					if s == want {
+						m.service = s
+						m.resetFilter()
+						if m.shouldConfirm() {
+							m.confirmInput.Focus()
+							m.step = stepConfirm
+							return m, textinput.Blink
+						}
+						m.loadingMsg = "Loading tasks..."
+						m.step = stepLoadTasks
+						return m, m.loadTasks()
+					}
+				}
+			}
 		}
 		m.step = stepSelectService
 		m.serviceCursor = 0
@@ -701,16 +1219,19 @@ func listNav(msg tea.KeyMsg, cursor *int, count int) bool {
 
 func (m *model) done() tea.Cmd {
 	m.step = stepDone
-	m.result = &Result{
-		Profile:     m.client.Profile,
-		Environment: m.environment,
-		Cluster:     m.cluster,
-		AppGroup:    m.appGroup,
-		Service:     m.service,
-		Slug:        m.slug,
-		TaskARN:     m.taskARN,
-		TaskShortID: m.taskShortID,
-		Container:   m.container,
+	m.outcome = &Outcome{
+		Mode: ModeECS,
+		ECS: &Result{
+			Profile:     m.client.Profile,
+			Environment: m.environment,
+			Cluster:     m.cluster,
+			AppGroup:    m.appGroup,
+			Service:     m.service,
+			Slug:        m.slug,
+			TaskARN:     m.taskARN,
+			TaskShortID: m.taskShortID,
+			Container:   m.container,
+		},
 	}
 	return tea.Quit
 }
@@ -757,6 +1278,87 @@ func (m model) loadTasks() tea.Cmd {
 		}
 		return tasksMsg(tasks)
 	}
+}
+
+func (m model) initDynamoClient() tea.Cmd {
+	return func() tea.Msg {
+		c, err := ddb.New(m.client.Profile, m.client.Region)
+		if err != nil {
+			return errMsg{err}
+		}
+		return dynamoReadyMsg{c: c}
+	}
+}
+
+func (m model) loadDynamoTables() tea.Cmd {
+	client := m.ddbClient
+	return func() tea.Msg {
+		all, err := client.ListTables(context.Background())
+		if err != nil {
+			return errMsg{fmt.Errorf("listing DynamoDB tables: %w", err)}
+		}
+		return dynamoTablesMsg(all)
+	}
+}
+
+func (m model) loadDynamoKeySchema() tea.Cmd {
+	tn := m.dynamoTableName
+	client := m.ddbClient
+	return func() tea.Msg {
+		ks, err := client.DescribeKeySchema(context.Background(), tn)
+		return dynamoDescribeMsg{schema: ks, err: err}
+	}
+}
+
+func (m model) runDynamoQuery() tea.Cmd {
+	skVal := strings.TrimSpace(m.dynamoSKInput.Value())
+	skName, skType := m.dynamoSKName, m.dynamoSKType
+	if skVal == "" {
+		skName, skType, skVal = "", "", ""
+	}
+	in := ddb.QueryInput{
+		Table:   m.dynamoTableName,
+		PKName:  m.dynamoPKName,
+		PKType:  m.dynamoPKType,
+		PKValue: strings.TrimSpace(m.dynamoPKInput.Value()),
+		SKName:  skName,
+		SKType:  skType,
+		SKValue: skVal,
+	}
+	client := m.ddbClient
+	return func() tea.Msg {
+		jsonStr, err := client.Query(context.Background(), in)
+		return dynamoQueryMsg{json: jsonStr, err: err}
+	}
+}
+
+func (m model) dynamoViewportInnerSize() (w, h int) {
+	h = m.height - 16
+	if h < 6 {
+		h = 6
+	}
+	if m.width <= 0 {
+		return 72, h
+	}
+	w = max(40, m.width-int(themeFrame().GetHorizontalFrameSize())-4)
+	return w, h
+}
+
+func (m model) syncDynamoResultViewport() model {
+	w, h := m.dynamoViewportInnerSize()
+	vp := m.dynamoViewport
+	vp.Width = w
+	vp.Height = h
+	vp.SetContent(m.dynamoResultJSON)
+	m.dynamoViewport = vp
+	return m
+}
+
+func (m model) resizeDynamoViewport() model {
+	if m.step != stepDynamoShowResults {
+		return m
+	}
+	return m.syncDynamoResultViewport()
 }
 
 func (m model) fetchPreview(key string) tea.Cmd {

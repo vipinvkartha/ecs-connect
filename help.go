@@ -144,8 +144,10 @@ func renderHelp() string {
 		"  " + bullet.Render("•") + "  " + dim.Render(".ecs-connect.yaml in the current directory"),
 		"  " + bullet.Render("•") + "  " + dim.Render("~/.ecs-connect.yaml in your home directory"),
 		"",
-		dim.Render("Fields: profile, environments, default_slug, command, region"),
-		dim.Render("See README.md for the full reference."),
+		dim.Render("Fields: profile, environments, default_slug, command, region,"),
+		dim.Render("defaults: profile, backend (ecs|dynamo), environment, cluster,"),
+		dim.Render("service, dynamo_table, dynamo_keyword (CLI/env override when set)."),
+		dim.Render("Full annotated example: ecs-connect.example.yaml (copy to .ecs-connect.yaml)."),
 	}, "\n")
 	configSection := lipgloss.JoinVertical(lipgloss.Left,
 		"",

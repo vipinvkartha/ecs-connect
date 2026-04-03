@@ -253,9 +253,53 @@ func (m model) View() string {
 		body.WriteString(m.breadcrumb())
 		body.WriteString(fmt.Sprintf("\n  %s Checking AWS credentials...\n", m.spinner.View()))
 
+	case stepChooseBackend:
+		body.WriteString(m.breadcrumb())
+		backends := []string{"ECS Exec (containers)", "DynamoDB (query tables)"}
+		body.WriteString(m.renderList("Choose backend", backends, m.backendCursor))
+
+	case stepLoadDynamoClient:
+		body.WriteString(m.breadcrumb())
+		body.WriteString(fmt.Sprintf("\n  %s %s\n", m.spinner.View(), m.loadingMsg))
+
 	case stepSelectEnv:
 		body.WriteString(m.breadcrumb())
 		body.WriteString(m.renderList("Select Environment", m.applyFilter(m.envItems), m.envCursor))
+
+	case stepDynamoPickKeyword:
+		body.WriteString(m.breadcrumb())
+		body.WriteString(m.renderList("Filter tables by name (keyword)", m.dynamoKeywordItems, m.dynamoKeywordCursor))
+
+	case stepLoadDynamoTables, stepLoadDynamoDescribe, stepLoadDynamoQuery:
+		body.WriteString(m.breadcrumb())
+		body.WriteString(fmt.Sprintf("\n  %s %s\n", m.spinner.View(), m.loadingMsg))
+
+	case stepSelectDynamoTable:
+		body.WriteString(m.breadcrumb())
+		body.WriteString(m.renderList("Select DynamoDB table", m.applyFilter(m.dynamoTableItems), m.dynamoTableCursor))
+
+	case stepDynamoEnterPK:
+		body.WriteString(m.breadcrumb())
+		body.WriteString("\n")
+		body.WriteString(themeTitle().Render("  Partition key"))
+		body.WriteString("\n\n  ")
+		body.WriteString(m.dynamoPKInput.View())
+		body.WriteString("\n")
+
+	case stepDynamoEnterSK:
+		body.WriteString(m.breadcrumb())
+		body.WriteString("\n")
+		body.WriteString(themeTitle().Render("  Sort key (optional)"))
+		body.WriteString("\n\n  ")
+		body.WriteString(m.dynamoSKInput.View())
+		body.WriteString("\n")
+
+	case stepDynamoShowResults:
+		body.WriteString(m.breadcrumb())
+		body.WriteString("\n")
+		body.WriteString(themeTitle().Render("  Query results"))
+		body.WriteString("\n\n")
+		body.WriteString(m.dynamoViewport.View())
 
 	case stepLoadClusters, stepLoadServices, stepLoadTasks:
 		body.WriteString(m.breadcrumb())
@@ -296,8 +340,32 @@ func (m model) View() string {
 
 func (m model) wizardProgress() (labels []string, current int, ok bool) {
 	switch m.step {
-	case stepCheckAuth:
+	case stepCheckAuth, stepChooseBackend, stepLoadDynamoClient:
 		return nil, 0, false
+	}
+	if m.dynamoMode {
+		if m.useNaming() {
+			labels = []string{"Env", "Table", "Query"}
+			switch m.step {
+			case stepSelectEnv, stepConfirm, stepLoadDynamoTables:
+				return labels, 0, true
+			case stepSelectDynamoTable, stepLoadDynamoDescribe:
+				return labels, 1, true
+			case stepDynamoEnterPK, stepDynamoEnterSK, stepLoadDynamoQuery, stepDynamoShowResults:
+				return labels, 2, true
+			}
+			return labels, 0, true
+		}
+		labels = []string{"Keyword", "Table", "Query"}
+		switch m.step {
+		case stepDynamoPickKeyword, stepLoadDynamoTables:
+			return labels, 0, true
+		case stepSelectDynamoTable, stepLoadDynamoDescribe:
+			return labels, 1, true
+		case stepDynamoEnterPK, stepDynamoEnterSK, stepLoadDynamoQuery, stepDynamoShowResults:
+			return labels, 2, true
+		}
+		return labels, 0, true
 	}
 	if m.useNaming() {
 		labels = []string{"Env", "Cluster", "Service", "Task"}
@@ -355,10 +423,20 @@ func (m model) renderFooter() string {
 	var hints []string
 	if m.filterActive {
 		hints = []string{"↑/↓ navigate", "enter select", "esc clear filter"}
+	} else if m.step == stepChooseBackend {
+		hints = []string{"↑/↓ navigate", "enter select", "b exit", "esc cancel"}
+	} else if m.step == stepDynamoShowResults {
+		hints = []string{"[/] scroll", "e edit keys", "r new query", "b back", "esc exit"}
+	} else if m.step == stepDynamoEnterPK {
+		hints = []string{"enter submit", "b back", "esc cancel"}
+	} else if m.step == stepDynamoEnterSK {
+		hints = []string{"enter run query", "leave empty to omit sort condition", "b back", "esc cancel"}
+	} else if m.step == stepConfirm {
+		hints = []string{"type yes + enter", "b back", "esc cancel"}
 	} else if m.step == stepSelectService {
-		hints = []string{"↑/↓ navigate", "enter select", "/ filter", "[/] preview scroll", "esc cancel"}
+		hints = []string{"↑/↓ navigate", "enter select", "/ filter", "[/] preview scroll", "b back", "esc cancel"}
 	} else {
-		hints = []string{"↑/↓ navigate", "enter select", "/ filter", "esc cancel"}
+		hints = []string{"↑/↓ navigate", "enter select", "/ filter", "b back", "esc cancel"}
 	}
 	line := "  " + strings.Join(hints, "  ·  ")
 	if m.width > 8 {
@@ -397,6 +475,15 @@ func (m model) breadcrumbPath() []string {
 	var parts []string
 	if m.profile != "" {
 		parts = append(parts, m.profile)
+	}
+	if m.dynamoMode {
+		if m.environment != "" {
+			parts = append(parts, m.environment)
+		}
+		if m.dynamoTableName != "" {
+			parts = append(parts, m.dynamoTableName)
+		}
+		return parts
 	}
 	if m.environment != "" {
 		parts = append(parts, m.environment)
@@ -611,8 +698,14 @@ func (m model) renderConfirm() string {
 	envLabel := strings.ToUpper(m.environment)
 	b.WriteString(themeWarning().Render(fmt.Sprintf("  !  %s ACCESS", envLabel)))
 	b.WriteString("\n\n")
-	b.WriteString(fmt.Sprintf("    Cluster:  %s\n", m.cluster))
-	b.WriteString(fmt.Sprintf("    Service:  %s\n", m.service))
+	if m.dynamoMode {
+		b.WriteString(themeDim().Render("    DynamoDB: list only tables whose names contain "))
+		b.WriteString(m.environment)
+		b.WriteString("\n")
+	} else {
+		b.WriteString(fmt.Sprintf("    Cluster:  %s\n", m.cluster))
+		b.WriteString(fmt.Sprintf("    Service:  %s\n", m.service))
+	}
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  %s\n", m.confirmInput.View()))
 	return b.String()

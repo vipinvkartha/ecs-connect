@@ -20,11 +20,6 @@ import (
 func main() {
 	cfg := parseFlags()
 
-	if _, err := exec.LookPath("session-manager-plugin"); err != nil {
-		fatal("session-manager-plugin not found in PATH.\n" +
-			"  Install: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html")
-	}
-
 	fileCfg := loadConfig(cfg.ConfigPath)
 	applyConfigDefaults(&cfg, fileCfg)
 
@@ -36,7 +31,7 @@ func main() {
 	opts.Cluster = cfg.Cluster
 	opts.Service = cfg.Service
 
-	result, client, err := tui.Run(opts)
+	outcome, client, err := tui.Run(opts)
 	if err != nil {
 		if err == tui.ErrCancelled {
 			fmt.Println("\n  Cancelled.")
@@ -45,12 +40,25 @@ func main() {
 		fatal("%v", err)
 	}
 
+	if outcome.Mode == tui.ModeDynamoDB {
+		if !cfg.Quiet {
+			fmt.Printf("\n  DynamoDB table: %s\n\n", outcome.Dynamo.Table)
+		}
+		fmt.Println(outcome.Dynamo.JSON)
+		return
+	}
+
+	if _, err := exec.LookPath("session-manager-plugin"); err != nil {
+		fatal("session-manager-plugin not found in PATH.\n" +
+			"  Install: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html")
+	}
+
 	if !cfg.Quiet {
 		printBanner()
 	}
-	printSummary(result, cfg.Command)
+	printSummary(outcome.ECS, cfg.Command)
 
-	if err := startSession(client, result, cfg.Command); err != nil {
+	if err := startSession(client, outcome.ECS, cfg.Command); err != nil {
 		fatal("Session failed: %v", err)
 	}
 }
@@ -130,7 +138,11 @@ func loadConfig(path string) *appconfig.Config {
 		}
 		return cfg
 	}
-	return appconfig.Discover()
+	cfg, err := appconfig.Discover()
+	if err != nil {
+		fatal("config file: %v", err)
+	}
+	return cfg
 }
 
 // applyConfigDefaults overrides built-in defaults with values from the config
@@ -139,14 +151,29 @@ func applyConfigDefaults(cfg *cliConfig, fileCfg *appconfig.Config) {
 	if fileCfg == nil {
 		return
 	}
-	if !cfg.profileExplicit && os.Getenv("AWS_PROFILE") == "" && fileCfg.Profile != "" {
-		cfg.Profile = fileCfg.Profile
+	if !cfg.profileExplicit && os.Getenv("AWS_PROFILE") == "" {
+		if fileCfg.Profile != "" {
+			cfg.Profile = fileCfg.Profile
+		} else if fileCfg.Defaults != nil {
+			if p := strings.TrimSpace(fileCfg.Defaults.Profile); p != "" {
+				cfg.Profile = p
+			}
+		}
 	}
 	if !cfg.regionExplicit && os.Getenv("AWS_REGION") == "" && os.Getenv("AWS_DEFAULT_REGION") == "" && fileCfg.Region != "" {
 		cfg.Region = fileCfg.Region
 	}
 	if !cfg.commandExplicit && os.Getenv("COMMAND") == "" && fileCfg.Command != "" {
 		cfg.Command = fileCfg.Command
+	}
+	if fileCfg.Defaults != nil {
+		d := fileCfg.Defaults
+		if cfg.Cluster == "" && strings.TrimSpace(d.Cluster) != "" {
+			cfg.Cluster = strings.TrimSpace(d.Cluster)
+		}
+		if cfg.Service == "" && strings.TrimSpace(d.Service) != "" {
+			cfg.Service = strings.TrimSpace(d.Service)
+		}
 	}
 }
 

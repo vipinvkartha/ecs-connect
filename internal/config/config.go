@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -14,6 +16,31 @@ type Config struct {
 	DefaultSlug  string        `yaml:"default_slug"`
 	Command      string        `yaml:"command"`
 	Region       string        `yaml:"region"`
+	Defaults     *Defaults     `yaml:"defaults"`
+}
+
+// Defaults optional shortcuts so the wizard can skip steps when values match
+// (CLI flags still win when set). See NormalizeBackend for backend values.
+type Defaults struct {
+	Profile       string `yaml:"profile"`        // AWS profile (used if root profile is unset)
+	Backend       string `yaml:"backend"`        // ecs | dynamo (aliases: dynamodb, ddb)
+	Environment   string `yaml:"environment"`    // must match environments[].name when using naming
+	Cluster       string `yaml:"cluster"`        // exact ECS cluster name
+	Service       string `yaml:"service"`        // ECS service name or slug (naming mode)
+	DynamoTable   string `yaml:"dynamo_table"`   // exact table name after keyword filter
+	DynamoKeyword string `yaml:"dynamo_keyword"` // substring filter when not using naming (any string)
+}
+
+// NormalizeBackend returns "ecs", "dynamo", or "" if unset/unknown.
+func NormalizeBackend(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "ecs", "exec":
+		return "ecs"
+	case "dynamo", "dynamodb", "ddb":
+		return "dynamo"
+	default:
+		return ""
+	}
 }
 
 // Environment defines one selectable environment and whether it requires
@@ -37,8 +64,10 @@ func Load(path string) (*Config, error) {
 }
 
 // Discover searches for a config file in the working directory and home
-// directory. Returns nil if no config file is found.
-func Discover() *Config {
+// directory. Returns (nil, nil) if no candidate file exists. If a file exists
+// but is invalid YAML, returns an error so callers can surface it instead of
+// silently ignoring the broken config.
+func Discover() (*Config, error) {
 	candidates := []string{
 		".ecs-connect.yaml",
 		".ecs-connect.yml",
@@ -50,11 +79,20 @@ func Discover() *Config {
 		)
 	}
 	for _, path := range candidates {
-		if cfg, err := Load(path); err == nil {
-			return cfg
+		_, statErr := os.Stat(path)
+		if statErr != nil {
+			if os.IsNotExist(statErr) {
+				continue
+			}
+			return nil, fmt.Errorf("%s: %w", path, statErr)
 		}
+		cfg, err := Load(path)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		return cfg, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // HasNaming reports whether the config defines environment-based naming.

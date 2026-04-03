@@ -1,0 +1,58 @@
+# =============================================================================
+# ecs-connect — example config (copy to .ecs-connect.yaml in project or home)
+# =============================================================================
+# Discovery order: --config / ECS_CONNECT_CONFIG, then ./.ecs-connect.yaml,
+# then ./.ecs-connect.yml, then ~/.ecs-connect.yaml, then ~/.ecs-connect.yml
+#
+# YAML rules:
+#   • Top-level keys (profile, environments, …) start at column 0.
+#   • Under `defaults:`, use two spaces for nested keys — never indent `defaults:` itself.
+#   • Quote `command` if it contains # or other YAML-significant characters.
+#   • CLI flags and AWS_* env vars override file defaults when you set them explicitly.
+#
+# Remove sections you do not need. This file shows every supported key.
+
+# ---------------------------------------------------------------------------
+# Core (optional — each overrides empty flag / env when not set on CLI)
+# ---------------------------------------------------------------------------
+
+# AWS CLI profile (also: defaults.profile if this is omitted and no AWS_PROFILE)
+profile: my-aws-profile
+
+# Shell command ecs-exec runs in the container (overridden by --command / COMMAND env)
+command: "/bin/sh"
+
+# AWS region (overridden by --region, AWS_REGION, AWS_DEFAULT_REGION)
+region: eu-west-1
+
+# ---------------------------------------------------------------------------
+# Naming mode — if `environments` is non-empty, the wizard uses env → cluster → …
+# Omit `environments` (or leave empty) for generic ECS (cluster → service → task).
+# ---------------------------------------------------------------------------
+
+default_slug: web
+
+environments:
+  - name: staging
+    # confirm: false
+  - name: production
+    confirm: true # type "yes" on production warning before tasks / some Dynamo paths
+
+# ---------------------------------------------------------------------------
+# defaults — skip wizard steps when values match (CLI still wins)
+# ---------------------------------------------------------------------------
+# backend:        ecs | dynamo  (aliases: exec ; dynamodb, ddb)
+# environment:    must match an environments[].name when naming mode is on
+# cluster:        exact ECS cluster name
+# service:        full ECS service name, or slug when using naming mode
+# dynamo_table:   exact DynamoDB table name (after keyword filter)
+# dynamo_keyword: substring to filter table names when NOT using environments / naming
+
+defaults:
+  profile: fallback-profile-if-root-profile-omitted
+  backend: ecs
+  environment: staging
+  cluster: my-app-staging
+  service: my-app-web-staging
+  dynamo_table: MyApp-staging-data
+  dynamo_keyword: staging

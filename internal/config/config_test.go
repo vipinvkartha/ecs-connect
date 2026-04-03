@@ -6,6 +6,57 @@ import (
 	"testing"
 )
 
+func TestNormalizeBackend(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"ecs", "ecs"},
+		{"ECS", "ecs"},
+		{"exec", "ecs"},
+		{"dynamo", "dynamo"},
+		{"DynamoDB", "dynamo"},
+		{"ddb", "dynamo"},
+		{"", ""},
+		{"  ", ""},
+		{"lambda", ""},
+	}
+	for _, tt := range tests {
+		if got := NormalizeBackend(tt.in); got != tt.want {
+			t.Errorf("NormalizeBackend(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestLoad_defaultsSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.yaml")
+	content := `
+profile: p1
+defaults:
+  profile: p-from-defaults
+  backend: dynamodb
+  environment: staging
+  cluster: cl1
+  service: svc1
+  dynamo_table: Tbl-staging
+  dynamo_keyword: staging
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Defaults == nil {
+		t.Fatal("expected Defaults")
+	}
+	d := cfg.Defaults
+	if d.Profile != "p-from-defaults" || NormalizeBackend(d.Backend) != "dynamo" ||
+		d.Environment != "staging" || d.Cluster != "cl1" || d.Service != "svc1" ||
+		d.DynamoTable != "Tbl-staging" || d.DynamoKeyword != "staging" {
+		t.Fatalf("Defaults = %+v", d)
+	}
+}
+
 func TestLoad_validYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.yaml")
@@ -122,7 +173,10 @@ func TestDiscover_prefersCwdOverHome(t *testing.T) {
 
 	t.Chdir(wd)
 
-	cfg := Discover()
+	cfg, err := Discover()
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
 	if cfg == nil {
 		t.Fatal("Discover returned nil")
 	}
@@ -142,7 +196,10 @@ func TestDiscover_fallsBackToHome(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := Discover()
+	cfg, err := Discover()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg == nil || cfg.Profile != "only-home" {
 		t.Fatalf("Discover = %#v", cfg)
 	}
@@ -157,7 +214,10 @@ func TestDiscover_prefersYamlOverYmlInCwd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wd, ".ecs-connect.yaml"), []byte("profile: from-yaml\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Discover()
+	cfg, err := Discover()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg == nil || cfg.Profile != "from-yaml" {
 		t.Fatalf("got %#v", cfg)
 	}
@@ -169,7 +229,10 @@ func TestDiscover_ymlExtensionInCwd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wd, ".ecs-connect.yml"), []byte("profile: yml-ext\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Discover()
+	cfg, err := Discover()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg == nil || cfg.Profile != "yml-ext" {
 		t.Fatalf("got %#v", cfg)
 	}
@@ -180,7 +243,46 @@ func TestDiscover_noneFound(t *testing.T) {
 	t.Chdir(wd)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	if Discover() != nil {
+	cfg, err := Discover()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg != nil {
 		t.Fatal("expected nil when no config files")
+	}
+}
+
+func TestLoad_repoExampleYAML(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	path := filepath.Join(repoRoot, "ecs-connect.example.yaml")
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("ecs-connect.example.yaml not in repo root")
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load example: %v", err)
+	}
+	if cfg.Profile == "" || cfg.Region == "" || len(cfg.Environments) < 1 {
+		t.Fatalf("unexpected parse: %+v", cfg)
+	}
+	if cfg.Defaults == nil || NormalizeBackend(cfg.Defaults.Backend) == "" {
+		t.Fatalf("expected defaults with backend: %+v", cfg.Defaults)
+	}
+}
+
+func TestDiscover_invalidYAML_returnsError(t *testing.T) {
+	wd := t.TempDir()
+	t.Chdir(wd)
+	path := filepath.Join(wd, ".ecs-connect.yaml")
+	// Broken structure: `defaults` indented under `region` while region is a string.
+	if err := os.WriteFile(path, []byte("profile: p\nregion: eu-west-1\n defaults:\n   backend: ecs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Discover()
+	if err == nil {
+		t.Fatalf("expected error, got cfg=%#v", cfg)
+	}
+	if cfg != nil {
+		t.Fatalf("cfg = %#v", cfg)
 	}
 }
