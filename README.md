@@ -1,8 +1,8 @@
 # ecs-connect
 
-Interactive CLI for exec-ing into running AWS ECS tasks — no more copy-pasting ARNs.
+Interactive CLI for **ECS Exec** (shell into a running task) and **DynamoDB** read-only queries — all behind one small TUI so you stop copy-pasting ARNs and table names.
 
-Pick a cluster, service, and task through a guided TUI wizard, and land in a shell inside the container.
+After AWS auth, choose **ECS** or **DynamoDB**. ECS walks cluster → service → task → container, then hands off to `session-manager-plugin`. DynamoDB lists tables (optionally filtered by environment keyword), runs a **Query** on partition key (+ optional sort key), and prints JSON (with mouse scroll and copy).
 
 ## Quick start
 
@@ -19,15 +19,15 @@ go build -o ecs-connect .
 # Run a specific command in the container
 ./ecs-connect --command /bin/bash
 
-# Skip straight to a known cluster
-./ecs-connect --cluster my-cluster
-
-# Skip straight to a known cluster and service
+# Skip cluster / service / container pickers (when exactly one task matches, or container name is unambiguous)
 ./ecs-connect --cluster my-cluster --service my-service
+./ecs-connect --cluster my-cluster --service my-service --container app
 
-# Suppress the banner
+# Suppress the banner (ECS path only affects banner; Dynamo path still prints JSON)
 ECS_CONNECT_QUIET=1 ./ecs-connect
 ```
+
+See **`ecs-connect.example.yaml`** in the repo for a commented file with every supported config key — copy it to `.ecs-connect.yaml` and edit.
 
 ## Homebrew (custom tap)
 
@@ -50,6 +50,24 @@ Upgrade: `brew upgrade ecs-connect`. Config behaviour is unchanged: use `./.ecs-
 Local snapshot without publishing: `goreleaser release --snapshot --clean` (does not push the tap).
 
 ## How it works
+
+### Choose backend (after auth)
+
+Unless `defaults.backend` is set in your config (`ecs` or `dynamo`), the first screen lets you pick:
+
+- **ECS Exec (containers)** — interactive flow below; requires **session-manager-plugin** and ECS Exec on the service.
+- **DynamoDB (query tables)** — no session-manager plugin; uses the AWS SDK for DynamoDB in the configured region.
+
+### DynamoDB flow (read-only v1)
+
+1. Connect DynamoDB client (same profile/region as ECS).
+2. **With config `environments`:** pick environment (or use `defaults.environment`) — optional production **confirm** — list tables whose **names contain** that keyword (case-insensitive substring).
+3. **Without naming config:** pick `staging` / `production` as the keyword, or set `defaults.dynamo_keyword`.
+4. Pick table (or `defaults.dynamo_table` if it matches after filtering).
+5. Enter partition key value (+ sort key if the table has one; sort key is **optional** — leave empty to query the whole partition within the limit).
+6. View JSON results: **mouse wheel** to scroll, **`[` / `]`** keyboard scroll, **`c` / `y`** copy JSON (OS clipboard, with OSC 52 fallback), **`r`** new query, **`e`** edit keys, **`b`** back, **`Esc`** exit and print the last result.
+
+Binary (`B`) key attributes are not supported in v1.
 
 ### Authentication flow
 
@@ -85,49 +103,47 @@ When prompted, the profile picker looks like this:
   Choose an option [1-5]:
 ```
 
-### Default mode (no config file)
+### Default mode (no config file, ECS path)
 
 ```
- Auth             Cluster              Service            Task        Container
-┌────────────┐  ┌──────────────────┐  ┌──────────────┐  ┌──────────┐ ┌──────────┐
-│ auto-detect│─▶│ my-cluster-a     │─▶│ my-service-a │─▶│ (auto)   │─▶│ (auto)  │──▶ Session
-│ or prompt  │  │ my-cluster-b     │  │ my-service-b │  │ or pick  │ │ or pick  │
-│ + SSO login│  └──────────────────┘  │ my-service-c │  └──────────┘ └──────────┘
-└────────────┘                        └──────────────┘
-                                        ▲ preview panel shows service
-                                        │ health + recent deployments
+ Auth        Backend?       Cluster              Service            Task        Container
+┌────────┐  ┌───────────┐  ┌────────────────┐  ┌──────────────┐  ┌──────────┐ ┌──────────┐
+│ detect │─▶│ ECS|Dynamo│─▶│ my-cluster-a   │─▶│ my-service-a │─▶│ (auto)   │─▶│ (auto)   │──▶ Session
+│ + SSO  │  │ (if unset)│  │ my-cluster-b   │  │ my-service-b │  │ or pick  │ │ or pick  │
+└────────┘  └───────────┘  └────────────────┘  └──────────────┘  └──────────┘ └──────────┘
+                                                   ▲ preview: service health + deployments
 ```
 
 1. **Auth** — resolves credentials automatically (see authentication flow above). Only prompts if no active session is found anywhere.
-2. **Select cluster** — lists all ECS clusters in the account.
-3. **Select service** — lists all services in the selected cluster with a live preview panel showing service health and the last 10 deployments (rollout state, task definition, age, running/desired counts).
-4. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
-5. **Select container** — auto-selects if the task has a single container; prompts otherwise.
-6. **Connect** — calls `ExecuteCommand` and hands off to `session-manager-plugin`.
+2. **Backend** — pick ECS or DynamoDB, or skip via `defaults.backend` in YAML.
+3. **Select cluster** — lists all ECS clusters in the account.
+4. **Select service** — lists all services in the selected cluster with a live preview panel showing service health and the last 10 deployments (rollout state, task definition, age, running/desired counts).
+5. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
+6. **Select container** — auto-selects if the task has a single container; prompts otherwise. Skipped when `--container` / `defaults.container` matches (see [Flags](#flags-and-environment-variables)).
+7. **Connect** — calls `ExecuteCommand` and hands off to `session-manager-plugin`.
 
-### With config file (environment-based naming)
+### With config file (environment-based naming, ECS path)
 
 When a `.ecs-connect.yaml` config file is present with environments defined, the tool adds environment selection and service slug mapping:
 
 ```
- Auth           Environment       Cluster            Service          Task
-┌────────────┐ ┌────────────┐   ┌────────────────┐  ┌────────────┐  ┌──────────┐
-│ auto-detect│▶│ staging    │──▶│ home-staging   │─▶│ web        │─▶│ (auto)   │──▶ Session
-│ or prompt  │ │ production │   │ auth-staging   │  │ worker     │  │ or pick  │
-│ + SSO login│ └────────────┘   └────────────────┘  │ sidekiq    │  └──────────┘
-└────────────┘                                      └────────────┘
-                                                      ▲ preview panel shows service
-                                                      │ health + recent deployments
+ Auth        Backend?    Environment       Cluster            Service          Task
+┌────────┐  ┌─────────┐ ┌────────────┐   ┌────────────────┐  ┌────────────┐  ┌──────────┐
+│ detect │─▶│ ECS|DD  │▶│ staging    │──▶│ home-staging   │─▶│ web        │─▶│ (auto)   │──▶ Session
+│ + SSO  │  └─────────┘ │ production │   │ auth-staging   │  │ worker     │  │ or pick  │
+└────────┘              └────────────┘   └────────────────┘  └────────────┘  └──────────┘
+                                                                  ▲ preview: health + deployments
 ```
 
 1. **Auth** — same auto-detect flow as default mode.
-2. **Select environment** — from the environments listed in the config file.
-3. **Select cluster** — lists clusters ending with `-{env}` (e.g. `home-staging`).
-4. **Select service** — maps ECS services to friendly slugs (`web`, `worker`, …) with a live preview panel showing service health and recent deployments.
-5. **Confirmation** — if the selected environment has `confirm: true`, you must type `yes` to proceed.
-6. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
-7. **Select container** — auto-selects if the task has a single container; prompts otherwise.
-8. **Connect** — calls `ExecuteCommand` and hands off to `session-manager-plugin`.
+2. **Backend** — pick ECS or DynamoDB, or use `defaults.backend`.
+3. **Select environment** — from the environments listed in the config file (skippable via `defaults.environment` when it matches a defined env).
+4. **Select cluster** — lists clusters ending with `-{env}` (e.g. `home-staging`).
+5. **Select service** — maps ECS services to friendly slugs (`web`, `worker`, …) with a live preview panel showing service health and recent deployments.
+6. **Confirmation** — if the selected environment has `confirm: true`, you must type `yes` to proceed (ECS and Dynamo naming flows).
+7. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
+8. **Select container** — auto-selects if the task has a single container; prompts otherwise, unless `--container` / `defaults.container` matches.
+9. **Connect** — calls `ExecuteCommand` and hands off to `session-manager-plugin`.
 
 ## Configuration
 
@@ -141,19 +157,22 @@ Create a `.ecs-connect.yaml` file to customise the tool for your team. Without t
 
 If none are found the tool uses built-in defaults (generic mode).
 
+If a candidate file **exists** but has **invalid YAML** (for example a mis-indented `defaults:` key), the program exits with a **parse error** pointing at that path instead of silently ignoring the file.
+
 ### Value precedence
 
 When the same setting can come from multiple sources, the first match wins:
 
-**CLI flag → environment variable → config file → built-in default**
+**CLI flag → environment variable → top-level config fields → `defaults.*` in config → built-in default**
 
-For example, `--command /bin/bash` overrides `COMMAND` env var, which overrides the `command:` field in the config file.
+For example, `--command /bin/bash` overrides `COMMAND` env var, which overrides the `command:` field in the config file. For cluster/service/container, CLI overrides both root fields and `defaults.*`.
 
 ### Full config reference
 
 ```yaml
 # ──────────────────────────────────────────────────────────────────────
 # .ecs-connect.yaml — all fields are optional
+# Copy ecs-connect.example.yaml for a longer annotated template.
 # ──────────────────────────────────────────────────────────────────────
 
 # profile — AWS CLI profile to use.
@@ -176,7 +195,7 @@ environments:
 # Default: "web"
 default_slug: web
 
-# command — default command to execute inside the container.
+# command — default command to execute inside the container (ECS only).
 # Overridden by --command flag or COMMAND env var.
 # Built-in default (without config file): /bin/sh
 command: "bundle exec rails c -- --noautocomplete"
@@ -185,6 +204,19 @@ command: "bundle exec rails c -- --noautocomplete"
 # Overridden by --region flag, AWS_REGION, or AWS_DEFAULT_REGION env vars.
 # Built-in default (without config file): resolved from your AWS profile.
 region: eu-west-1
+
+# defaults — optional wizard shortcuts (all optional).
+# Top-level profile/cluster/service still win over defaults.* when set.
+# `defaults:` must start at column 0 (same as profile:), not indented under another key.
+defaults:
+  profile: fallback-profile          # if root profile is omitted and no AWS_PROFILE
+  backend: ecs                       # ecs | dynamo — skip backend chooser
+  environment: staging             # must match environments[].name when using naming
+  cluster: my-app-staging          # exact ECS cluster name
+  service: my-app-web-staging      # ECS service name or slug (naming mode)
+  container: app                   # ECS container name (with cluster + service)
+  dynamo_table: MyApp-staging-data # exact table name after keyword filter
+  dynamo_keyword: staging          # table name filter when not using environments
 ```
 
 ### Config field details
@@ -198,6 +230,15 @@ region: eu-west-1
 | `default_slug` | string | `web` | The slug label assigned to services that match `{app}-{env}` exactly (no slug segment in the name). |
 | `command` | string | `/bin/sh` | The command to execute inside the container. Common values: `/bin/bash`, `bundle exec rails c -- --noautocomplete`, `python manage.py shell`. |
 | `region` | string | *(from profile)* | AWS region for all API calls. When omitted, the region is resolved from `--region` flag, `AWS_REGION` env var, or the profile's region in `~/.aws/config`. |
+| `defaults` | map | *(absent)* | Shortcuts to skip wizard steps when values match; see table below. |
+| `defaults.profile` | string | — | Profile if root `profile` and `AWS_PROFILE` are unset. |
+| `defaults.backend` | string | — | `ecs` / `exec` or `dynamo` / `dynamodb` / `ddb` — skip backend selection. |
+| `defaults.environment` | string | — | Must match an `environments[].name` when naming mode is on; skips env picker. |
+| `defaults.cluster` | string | — | Exact ECS cluster name; skips cluster list when it matches. |
+| `defaults.service` | string | — | ECS service or slug; skips service list when it matches. |
+| `defaults.container` | string | — | ECS container name; skips container picker when the chosen task matches. |
+| `defaults.dynamo_table` | string | — | Exact DynamoDB table name after keyword filtering. |
+| `defaults.dynamo_keyword` | string | — | Substring filter for table names when **not** using `environments` (generic Dynamo path). |
 
 ### Example configs
 
@@ -258,50 +299,60 @@ The `default_slug` config field controls what the "bare" service (`{app}-{env}`)
 
 ## Flags and environment variables
 
-All settings can be passed as flags or environment variables. Flags take precedence.
+All settings can be passed as flags or environment variables. Flags take precedence over config and `defaults.*`.
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
 | `--profile` | `AWS_PROFILE` | *(auto-detect)* | AWS CLI / SSO profile. If not set, auto-detects active sessions; prompts only if none found. |
-| `--region` | `AWS_REGION`, `AWS_DEFAULT_REGION` | *(from profile)* | AWS region |
-| `--command` | `COMMAND` | `/bin/sh` | Command to run in the container |
+| `--region` | `AWS_REGION`, `AWS_DEFAULT_REGION` | *(from profile)* | AWS region (ECS and DynamoDB) |
+| `--command` | `COMMAND` | `/bin/sh` | Command to run in the container (**ECS path only**) |
 | `--config` | `ECS_CONNECT_CONFIG` | *(auto-discover)* | Path to config file |
 | `--cluster` | | | ECS cluster (skip interactive selection) |
 | `--service` | | | ECS service (skip interactive selection) |
-| `--quiet` | `ECS_CONNECT_QUIET=1` | off | Suppress the startup banner |
+| `--container` | | | ECS container name — skip picker when it matches the task (use with `--cluster` / `--service`; see code for multi-task rules) |
+| `--quiet` | `ECS_CONNECT_QUIET=1` | off | Suppress the startup banner (**ECS** path); Dynamo path still prints JSON |
+
+**session-manager-plugin** is only required when you complete an **ECS** session — it is **not** needed for DynamoDB-only use.
 
 ## Prerequisites
 
-- **Go 1.22+** (build only)
+- **Go 1.24+** (build only; see `go.mod`)
 - **AWS CLI** configured with your SSO profile(s)
-- **session-manager-plugin** — [install guide](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+- **session-manager-plugin** — [install guide](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) — **ECS Exec path only**
 - **ECS Exec** enabled on the target services/tasks
-- IAM permissions for `ecs:ExecuteCommand`, `ecs:DescribeTasks`, `ecs:ListTasks`, `ecs:ListClusters`, `ecs:ListServices`, `ecs:DescribeServices`, `sts:GetCallerIdentity`, and SSM session access
+- IAM (ECS path): `ecs:ExecuteCommand`, `ecs:DescribeTasks`, `ecs:ListTasks`, `ecs:ListClusters`, `ecs:ListServices`, `ecs:DescribeServices`, `sts:GetCallerIdentity`, and SSM session access
+- IAM (Dynamo path): `dynamodb:ListTables`, `dynamodb:DescribeTable`, `dynamodb:Query` (read-only usage in the tool today)
 
 ## Project structure
 
 ```
 ecs-connect/
-├── main.go                  Entry point, config, auth, banner, session exec
+├── main.go                  Entry point, config, auth, banner, session exec / Dynamo output
+├── help.go                  --help rendering
+├── ecs-connect.example.yaml Full annotated config template (copy to .ecs-connect.yaml)
 ├── internal/
 │   ├── cloud/
-│   │   ├── cloud.go         AWS SDK v2 client (STS + ECS operations)
+│   │   ├── cloud.go         AWS SDK v2 client (STS + ECS)
 │   │   └── profiles.go      Parse ~/.aws/config for profile names
 │   ├── config/
-│   │   └── config.go        YAML config file loading
+│   │   └── config.go        YAML config, defaults, discovery (strict parse on existing file)
+│   ├── ddb/
+│   │   └── ddb.go           DynamoDB list / describe / query + JSON helpers
 │   ├── naming/
-│   │   ├── naming.go        Cluster/service naming conventions
-│   │   └── naming_test.go   Tests
+│   │   └── naming.go        Cluster/service naming conventions
 │   └── tui/
-│       ├── model.go         Bubbletea model, Init, Update, commands
-│       └── view.go          View rendering, lipgloss styles, preview panel
-├── .ecs-connect.yaml        Example config file
-├── .goreleaser.yaml         GoReleaser build config
+│       ├── model.go         Bubble Tea model, ECS + Dynamo flows
+│       ├── view.go          Lipgloss UI, preview + Dynamo results
+│       ├── outcome.go       ECS result vs Dynamo outcome
+│       └── clip.go          Clipboard helper (Dynamo results)
+├── .goreleaser.yaml
 ├── go.mod
 └── go.sum
 ```
 
 ## Keyboard shortcuts
+
+### Lists (cluster, service, task, env, …)
 
 | Key | Action |
 |---|---|
@@ -309,5 +360,30 @@ ecs-connect/
 | `↓` / `j` | Move down |
 | `Enter` | Select |
 | `/` | Filter list |
-| `Esc` | Clear filter / Cancel |
+| `b` | Go back one step (when filter is not active) |
+| `Esc` | Clear filter, or cancel / quit (see on-screen footer) |
 | `Ctrl+C` | Quit |
+
+### Service step only
+
+| Key | Action |
+|---|---|
+| `[` / `]` | Scroll service preview panel |
+
+### DynamoDB query results
+
+| Key | Action |
+|---|---|
+| Mouse wheel | Scroll results (requires terminal mouse reporting) |
+| `[` / `]` | Scroll |
+| `c` / `y` | Copy full JSON to clipboard (OSC 52 fallback if OS copy fails) |
+| `e` | Edit keys (back one step in PK/SK flow) |
+| `r` | New query (same table, clear PK/SK) |
+| `b` | Back to table list |
+| `Esc` | Exit and print last JSON |
+
+### Choose backend
+
+| Key | Action |
+|---|---|
+| `b` | Exit wizard from first post-auth screen |
