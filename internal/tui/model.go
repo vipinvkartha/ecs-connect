@@ -230,21 +230,21 @@ func newModel(opts Options) model {
 	dvp.MouseWheelEnabled = true
 
 	m := model{
-		client:          opts.Client,
-		cfg:             opts.Config,
-		spinner:         s,
-		confirmInput:    ti,
-		dynamoPKInput:   pki,
-		dynamoSKInput:   ski,
+		client:              opts.Client,
+		cfg:                 opts.Config,
+		spinner:             s,
+		confirmInput:        ti,
+		dynamoPKInput:       pki,
+		dynamoSKInput:       ski,
 		previewCache:        make(map[string]*cloud.ServiceInfo),
 		previewViewport:     vp,
 		taskPreviewViewport: tvp,
 		dynamoViewport:      dvp,
-		profile:         opts.Client.Profile,
-		cluster:         opts.Cluster,
-		service:         opts.Service,
-		presetContainer: strings.TrimSpace(opts.Container),
-		step:            stepCheckAuth,
+		profile:             opts.Client.Profile,
+		cluster:             opts.Cluster,
+		service:             opts.Service,
+		presetContainer:     strings.TrimSpace(opts.Container),
+		step:                stepCheckAuth,
 	}
 
 	if m.cfg.HasNaming() {
