@@ -54,5 +54,6 @@ defaults:
   environment: staging
   cluster: my-app-staging
   service: my-app-web-staging
+  container: app # ECS container name when cluster + service are set
   dynamo_table: MyApp-staging-data
   dynamo_keyword: staging

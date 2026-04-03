@@ -105,6 +105,7 @@ func renderHelp() string {
 		}},
 		{"--cluster <name>", "", []string{"ECS cluster — skip interactive cluster selection."}},
 		{"--service <name>", "", []string{"ECS service — skip interactive service selection."}},
+		{"--container <name>", "", []string{"ECS container — skip picker when it matches the task (use with cluster + service)."}},
 		{"--quiet", "ECS_CONNECT_QUIET=1", []string{"Suppress the startup banner."}},
 		{"--help", "", []string{"Show this help message."}},
 	}
@@ -146,7 +147,7 @@ func renderHelp() string {
 		"",
 		dim.Render("Fields: profile, environments, default_slug, command, region,"),
 		dim.Render("defaults: profile, backend (ecs|dynamo), environment, cluster,"),
-		dim.Render("service, dynamo_table, dynamo_keyword (CLI/env override when set)."),
+		dim.Render("service, container, dynamo_table, dynamo_keyword (CLI/env override when set)."),
 		dim.Render("Full annotated example: ecs-connect.example.yaml (copy to .ecs-connect.yaml)."),
 	}, "\n")
 	configSection := lipgloss.JoinVertical(lipgloss.Left,
@@ -163,7 +164,8 @@ func renderHelp() string {
 	}{
 		{"ecs-connect", "Interactive wizard"},
 		{"ecs-connect --profile prod", "Use specific profile"},
-		{"ecs-connect --cluster my-cluster --service web", "Skip pickers"},
+		{"ecs-connect --cluster my-cluster --service web", "Skip cluster & service pickers"},
+		{"ecs-connect --cluster c --service s --container app", "Also skip container when it matches"},
 		{"ecs-connect --command /bin/bash", "Use bash instead of sh"},
 		{"AWS_PROFILE=prod ecs-connect", "Profile via env var"},
 	}

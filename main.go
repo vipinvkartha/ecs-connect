@@ -30,6 +30,7 @@ func main() {
 	opts.Config = fileCfg
 	opts.Cluster = cfg.Cluster
 	opts.Service = cfg.Service
+	opts.Container = cfg.Container
 
 	outcome, client, err := tui.Run(opts)
 	if err != nil {
@@ -75,6 +76,7 @@ type cliConfig struct {
 	ConfigPath      string
 	Cluster         string
 	Service         string
+	Container       string
 	profileExplicit bool
 	regionExplicit  bool
 	commandExplicit bool
@@ -96,6 +98,8 @@ func parseFlags() cliConfig {
 		"ECS cluster name (skip interactive selection)")
 	flag.StringVar(&c.Service, "service", "",
 		"ECS service name (skip interactive selection)")
+	flag.StringVar(&c.Container, "container", "",
+		"ECS container name (skip picker when task uniquely matches)")
 
 	flag.Usage = printHelp
 	flag.Parse()
@@ -173,6 +177,9 @@ func applyConfigDefaults(cfg *cliConfig, fileCfg *appconfig.Config) {
 		}
 		if cfg.Service == "" && strings.TrimSpace(d.Service) != "" {
 			cfg.Service = strings.TrimSpace(d.Service)
+		}
+		if cfg.Container == "" && strings.TrimSpace(d.Container) != "" {
+			cfg.Container = strings.TrimSpace(d.Container)
 		}
 	}
 }
@@ -334,6 +341,7 @@ func printBanner() {
     --config     Config file path    (env: ECS_CONNECT_CONFIG)
     --cluster    Skip cluster picker
     --service    Skip service picker
+    --container  Skip container picker when name matches
     --quiet      Suppress banner     (env: ECS_CONNECT_QUIET=1)
     --help       Show all options
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)

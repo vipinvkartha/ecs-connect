@@ -36,6 +36,7 @@ defaults:
   environment: staging
   cluster: cl1
   service: svc1
+  container: ctr1
   dynamo_table: Tbl-staging
   dynamo_keyword: staging
 `
@@ -52,7 +53,7 @@ defaults:
 	d := cfg.Defaults
 	if d.Profile != "p-from-defaults" || NormalizeBackend(d.Backend) != "dynamo" ||
 		d.Environment != "staging" || d.Cluster != "cl1" || d.Service != "svc1" ||
-		d.DynamoTable != "Tbl-staging" || d.DynamoKeyword != "staging" {
+		d.Container != "ctr1" || d.DynamoTable != "Tbl-staging" || d.DynamoKeyword != "staging" {
 		t.Fatalf("Defaults = %+v", d)
 	}
 }

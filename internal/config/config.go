@@ -27,6 +27,7 @@ type Defaults struct {
 	Environment   string `yaml:"environment"`    // must match environments[].name when using naming
 	Cluster       string `yaml:"cluster"`        // exact ECS cluster name
 	Service       string `yaml:"service"`        // ECS service name or slug (naming mode)
+	Container     string `yaml:"container"`      // ECS container name (skip picker when task matches)
 	DynamoTable   string `yaml:"dynamo_table"`   // exact table name after keyword filter
 	DynamoKeyword string `yaml:"dynamo_keyword"` // substring filter when not using naming (any string)
 }

@@ -37,17 +37,18 @@ type Result struct {
 
 // Options configures the TUI wizard.
 type Options struct {
-	Client  *cloud.Client  // pre-authenticated client (built by main)
-	Config  *config.Config // naming/env config (nil = generic mode)
-	Cluster string         // pre-selected cluster (skip picker)
-	Service string         // pre-selected service (skip picker)
+	Client    *cloud.Client  // pre-authenticated client (built by main)
+	Config    *config.Config // naming/env config (nil = generic mode)
+	Cluster   string         // pre-selected cluster (skip picker)
+	Service   string         // pre-selected service (skip picker)
+	Container string         // pre-selected container (skip picker when task matches)
 }
 
 // Run launches the interactive TUI wizard and returns an outcome
 // (ECS exec target or DynamoDB query result) plus the AWS client.
 func Run(opts Options) (*Outcome, *cloud.Client, error) {
 	m := newModel(opts)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	final, err := p.Run()
 	if err != nil {
 		return nil, nil, err
@@ -177,6 +178,9 @@ type model struct {
 	container   string
 	authARN     string
 
+	// presetContainer is the CLI/YAML container name; applied when tasks load.
+	presetContainer string
+
 	dynamoMode          bool
 	backendCursor       int
 	ddbClient           *ddb.Client
@@ -215,7 +219,7 @@ func newModel(opts Options) model {
 	vp.MouseWheelEnabled = false
 
 	dvp := viewport.New(0, 0)
-	dvp.MouseWheelEnabled = false
+	dvp.MouseWheelEnabled = true
 
 	m := model{
 		client:          opts.Client,
@@ -230,6 +234,7 @@ func newModel(opts Options) model {
 		profile:         opts.Client.Profile,
 		cluster:         opts.Cluster,
 		service:         opts.Service,
+		presetContainer: strings.TrimSpace(opts.Container),
 		step:            stepCheckAuth,
 	}
 
@@ -443,6 +448,23 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(m.spinner.Tick, m.checkAuth())
 }
 
+// tryPresetContainerForTask sets m.container when presetContainer matches the
+// task's containers. Returns handled=true with done() or a quit-on-error cmd.
+func (m *model) tryPresetContainerForTask(t cloud.TaskInfo) (tea.Cmd, bool) {
+	want := strings.TrimSpace(m.presetContainer)
+	if want == "" {
+		return nil, false
+	}
+	for _, c := range t.Containers {
+		if c == want {
+			m.container = c
+			return m.done(), true
+		}
+	}
+	m.err = fmt.Errorf("no container %q in task %s — available: %v", want, t.ShortID, t.Containers)
+	return tea.Quit, true
+}
+
 // tryWizardBack moves one step backward in the wizard when the user presses
 // b (only when the list filter is inactive). Returns ok=true if handled.
 func (m model) tryWizardBack() (model, tea.Cmd, bool) {
@@ -598,6 +620,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.resizeDynamoViewport()
 		return m, nil
 
+	case tea.MouseMsg:
+		if m.step == stepDynamoShowResults {
+			var cmd tea.Cmd
+			m.dynamoViewport, cmd = m.dynamoViewport.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			m.cancelled = true
@@ -662,6 +692,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.step = stepDynamoEnterPK
 				}
 				return m, textinput.Blink
+			case "c", "y":
+				return m, dynamoCopyJSONCmd(m.dynamoResultJSON)
 			}
 		}
 
@@ -916,6 +948,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.container = t.Containers[0]
 						return m, m.done()
 					}
+					mp := &m
+					if cmd, handled := mp.tryPresetContainerForTask(t); handled {
+						return *mp, cmd
+					}
+					m = *mp
 					m.containerItems = t.Containers
 					m.step = stepSelectContainer
 				}
@@ -1177,6 +1214,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t := tasks[0]
 			m.taskARN = t.ARN
 			m.taskShortID = t.ShortID
+			mp := &m
+			if cmd, handled := mp.tryPresetContainerForTask(t); handled {
+				return *mp, cmd
+			}
+			m = *mp
 			if len(t.Containers) == 1 {
 				m.container = t.Containers[0]
 				return m, m.done()
@@ -1184,6 +1226,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.containerItems = t.Containers
 			m.step = stepSelectContainer
 			return m, nil
+		}
+		want := strings.TrimSpace(m.presetContainer)
+		if want != "" {
+			var match []cloud.TaskInfo
+			for _, t := range tasks {
+				for _, c := range t.Containers {
+					if c == want {
+						match = append(match, t)
+						break
+					}
+				}
+			}
+			if len(match) == 1 {
+				t := match[0]
+				m.taskARN = t.ARN
+				m.taskShortID = t.ShortID
+				m.container = want
+				return m, m.done()
+			}
+			if len(match) == 0 {
+				m.err = fmt.Errorf("no running task in service %s has container %q", m.service, want)
+				return m, tea.Quit
+			}
 		}
 		m.taskItems = tasks
 		m.step = stepSelectTask

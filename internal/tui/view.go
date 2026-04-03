@@ -426,7 +426,7 @@ func (m model) renderFooter() string {
 	} else if m.step == stepChooseBackend {
 		hints = []string{"↑/↓ navigate", "enter select", "b exit", "esc cancel"}
 	} else if m.step == stepDynamoShowResults {
-		hints = []string{"[/] scroll", "e edit keys", "r new query", "b back", "esc exit"}
+		hints = []string{"wheel scroll", "[/] scroll", "c/y copy JSON", "e edit keys", "r new query", "b back", "esc exit"}
 	} else if m.step == stepDynamoEnterPK {
 		hints = []string{"enter submit", "b back", "esc cancel"}
 	} else if m.step == stepDynamoEnterSK {
