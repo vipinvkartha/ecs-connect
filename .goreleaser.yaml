@@ -16,9 +16,10 @@ builds:
 
 archives:
   - id: ecs-connect
-    builds:
+    ids:
       - ecs-connect
-    format: tar.gz
+    formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
@@ -33,15 +34,8 @@ changelog:
 
 brews:
   - name: ecs-connect
-    ids:
-      - ecs-connect
-    # Homebrew defaults include linux/arm (32-bit); we only build amd64 + arm64.
-    goos:
-      - darwin
-      - linux
-    goarch:
-      - amd64
-      - arm64
+    # Must match amd64 binaries (see internal/pipe/brew in GoReleaser).
+    goamd64: v1
     homepage: https://github.com/vipinvkartha/ecs-connect
     description: Interactive CLI for exec-ing into running AWS ECS tasks
     repository:
