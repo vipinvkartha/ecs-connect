@@ -13,6 +13,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -133,9 +134,11 @@ type model struct {
 	confirmInput textinput.Model
 
 	// service preview
-	previewCache   map[string]*cloud.ServiceInfo
-	currentPreview *cloud.ServiceInfo
-	previewLoading bool
+	previewCache     map[string]*cloud.ServiceInfo
+	currentPreview   *cloud.ServiceInfo
+	previewLoading   bool
+	previewViewport  viewport.Model
+	previewScrollKey string // resets viewport scroll when service selection changes
 
 	// inline filter (activated with /)
 	filterText   string
@@ -166,16 +169,20 @@ func newModel(opts Options) model {
 	ti.Placeholder = "type 'yes' to continue"
 	ti.CharLimit = 3
 
+	vp := viewport.New(0, 0)
+	vp.MouseWheelEnabled = false
+
 	m := model{
-		client:       opts.Client,
-		cfg:          opts.Config,
-		spinner:      s,
-		confirmInput: ti,
-		previewCache: make(map[string]*cloud.ServiceInfo),
-		profile:      opts.Client.Profile,
-		cluster:      opts.Cluster,
-		service:      opts.Service,
-		step:         stepCheckAuth,
+		client:          opts.Client,
+		cfg:             opts.Config,
+		spinner:         s,
+		confirmInput:    ti,
+		previewCache:    make(map[string]*cloud.ServiceInfo),
+		previewViewport: vp,
+		profile:         opts.Client.Profile,
+		cluster:         opts.Cluster,
+		service:         opts.Service,
+		step:            stepCheckAuth,
 	}
 
 	if m.cfg.HasNaming() {
@@ -277,6 +284,46 @@ func (m *model) clampCurrentCursor() {
 	}
 }
 
+func (m model) currentServiceKey() string {
+	visible := m.applyFilter(m.serviceItems)
+	if m.serviceCursor >= 0 && m.serviceCursor < len(visible) {
+		return visible[m.serviceCursor]
+	}
+	return ""
+}
+
+// syncPreviewForService updates the right-hand preview viewport. When resetScroll
+// is false, vertical scroll is preserved (used while the loading spinner animates).
+func (m model) syncPreviewForService(serviceKey string, resetScroll bool) model {
+	if m.step != stepSelectService {
+		return m
+	}
+	w, h := previewViewportInnerSize(m)
+	vp := m.previewViewport
+	vp.Width = w
+	vp.Height = h
+	prevKey := m.previewScrollKey
+	vp.SetContent(previewInnerContent(m))
+	if resetScroll || serviceKey != prevKey {
+		vp.GotoTop()
+		m.previewScrollKey = serviceKey
+	}
+	m.previewViewport = vp
+	return m
+}
+
+func (m model) resizePreviewViewportOnly() model {
+	if m.step != stepSelectService {
+		return m
+	}
+	w, h := previewViewportInnerSize(m)
+	vp := m.previewViewport
+	vp.Width = w
+	vp.Height = h
+	m.previewViewport = vp
+	return m
+}
+
 func (m *model) updateServicePreview() tea.Cmd {
 	visible := m.applyFilter(m.serviceItems)
 	if len(visible) == 0 || m.serviceCursor >= len(visible) {
@@ -313,6 +360,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m = m.resizePreviewViewportOnly()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -324,6 +372,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "esc" {
 			if m.filterActive {
 				m.resetFilter()
+				m.clampCurrentCursor()
+				if m.step == stepSelectService {
+					var cmd tea.Cmd
+					cmd = m.updateServicePreview()
+					m = m.syncPreviewForService(m.currentServiceKey(), true)
+					return m, cmd
+				}
 				return m, nil
 			}
 			if m.step != stepConfirm {
@@ -335,6 +390,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Filter text input: printable chars and backspace while filter is
 		// active in a list step. Arrow keys and enter fall through to the
 		// step-specific handlers below.
+		if m.step == stepSelectService && !m.filterActive {
+			switch msg.String() {
+			case "[":
+				vp := m.previewViewport
+				vp.ScrollUp(3)
+				m.previewViewport = vp
+				return m, nil
+			case "]":
+				vp := m.previewViewport
+				vp.ScrollDown(3)
+				m.previewViewport = vp
+				return m, nil
+			}
+		}
+
 		if m.filterActive && m.isListStep() {
 			key := msg.String()
 			switch key {
@@ -347,7 +417,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.clampCurrentCursor()
 				if m.step == stepSelectService {
-					return m, m.updateServicePreview()
+					cmd := m.updateServicePreview()
+					m = m.syncPreviewForService(m.currentServiceKey(), true)
+					return m, cmd
 				}
 				return m, nil
 			case "up", "down", "enter":
@@ -357,7 +429,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.filterText += key
 					m.clampCurrentCursor()
 					if m.step == stepSelectService {
-						return m, m.updateServicePreview()
+						cmd := m.updateServicePreview()
+						m = m.syncPreviewForService(m.currentServiceKey(), true)
+						return m, cmd
 					}
 				}
 				return m, nil
@@ -439,8 +513,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.currentPreview = nil
 					m.previewLoading = true
+					m = m.syncPreviewForService(key, true)
 					return m, m.fetchPreview(key)
 				}
+				m = m.syncPreviewForService(key, true)
 			}
 
 		case stepConfirm:
@@ -495,6 +571,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
+		if m.step == stepSelectService && m.previewLoading {
+			m = m.syncPreviewForService(m.currentServiceKey(), false)
+		}
 		return m, cmd
 
 	// --- async results ---
@@ -547,7 +626,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.serviceItems = services
 		}
 		m.step = stepSelectService
-		return m, m.fetchPreview(m.serviceItems[0])
+		m.serviceCursor = 0
+		visible := m.applyFilter(m.serviceItems)
+		key := visible[0]
+		m = m.syncPreviewForService(key, true)
+		return m, m.fetchPreview(key)
 
 	case previewMsg:
 		m.previewLoading = false
@@ -559,6 +642,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.currentPreview = msg.info
 				}
 			}
+		}
+		if m.step == stepSelectService {
+			m = m.syncPreviewForService(m.currentServiceKey(), true)
 		}
 		return m, nil
 
