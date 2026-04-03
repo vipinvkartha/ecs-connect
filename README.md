@@ -29,6 +29,26 @@ go build -o ecs-connect .
 ECS_CONNECT_QUIET=1 ./ecs-connect
 ```
 
+## Homebrew (custom tap)
+
+Install the pre-built binary from the [`homebrew-tap`](https://github.com/vipinvkartha/homebrew-tap) repository:
+
+```bash
+brew tap vipinvkartha/tap
+brew install ecs-connect
+```
+
+Upgrade: `brew upgrade ecs-connect`. Config behaviour is unchanged: use `./.ecs-connect.yaml`, `~/.ecs-connect.yaml`, or `--config` (see [Configuration](#configuration)).
+
+### One-time setup (maintainers)
+
+1. On GitHub, create an **empty** public repo named **`homebrew-tap`** (exact name so `brew tap vipinvkartha/tap` resolves to `github.com/vipinvkartha/homebrew-tap`). Initialise `main` (e.g. add a short `README.md` and push).
+2. Create a **classic** personal access token (or fine-grained PAT) that can **push** to `vipinvkartha/homebrew-tap` (`repo` scope for classic, or Contents read/write on that repo).
+3. In **`ecs-connect`** → *Settings* → *Secrets and variables* → *Actions*, add **`HOMEBREW_TAP_GITHUB_TOKEN`** with that PAT. The default `GITHUB_TOKEN` in Actions cannot push to another repo, so this secret is required for the formula bump commit.
+4. Tag and push a [semantic version](https://github.com/vipinvkartha/ecs-connect/releases) (e.g. `v0.1.0`). The **release** workflow runs [GoReleaser](https://goreleaser.com/), uploads archives to this repo’s GitHub Release, and opens a commit on `homebrew-tap` under `Formula/ecs-connect.rb`.
+
+Local snapshot without publishing: `goreleaser release --snapshot --clean` (does not push the tap).
+
 ## How it works
 
 ### Authentication flow

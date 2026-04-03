@@ -1,7 +1,9 @@
 version: 2
 
 builds:
-  - env:
+  - id: ecs-connect
+    binary: ecs-connect
+    env:
       - CGO_ENABLED=0
     goos:
       - linux
@@ -25,3 +27,25 @@ changelog:
     exclude:
       - "^docs:"
       - "^test:"
+
+brews:
+  - name: ecs-connect
+    ids:
+      - ecs-connect
+    homepage: https://github.com/vipinvkartha/ecs-connect
+    description: Interactive CLI for exec-ing into running AWS ECS tasks
+    repository:
+      owner: vipinvkartha
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    commit_msg_template: "brew: ecs-connect {{ .Tag }}"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    test: |
+      system "#{bin}/ecs-connect", "--help"
+    caveats: |
+      You need AWS CLI, session-manager-plugin, and ECS Exec enabled on target services.
+      Config is read from ./.ecs-connect.yaml, ~/.ecs-connect.yaml, or --config.
