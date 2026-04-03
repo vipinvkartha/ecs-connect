@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Verify gofmt
+        run: |
+          out="$(gofmt -l -e .)"
+          if [ -n "$out" ]; then
+            echo "These files need gofmt (run: gofmt -w .):"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go test
+        run: go test ./... -count=1

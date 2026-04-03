@@ -106,6 +106,40 @@ func TestSlugToServiceNameCustomDefault(t *testing.T) {
 	}
 }
 
+func TestClusterMatchesEnv_edgeCases(t *testing.T) {
+	if ClusterMatchesEnv("mycluster", "") {
+		t.Error("empty env: suffix is '-', should not match 'mycluster'")
+	}
+	// suffix "-" + "" equals "-"
+	if !ClusterMatchesEnv("bogus-", "") {
+		t.Error("cluster ending with '-' matches empty env via '-'+'' ")
+	}
+}
+
+func TestAppGroup_edgeCases(t *testing.T) {
+	if got := AppGroup("cluster", "wrong"); got != "cluster" {
+		t.Errorf("no suffix trim: %q", got)
+	}
+	if AppGroup("", "staging") != "" {
+		t.Errorf("empty cluster")
+	}
+}
+
+func TestServiceMatchesConvention_negative(t *testing.T) {
+	if ServiceMatchesConvention("home-staging", "other", "staging") {
+		t.Error("wrong app group prefix")
+	}
+	if ServiceMatchesConvention("home-worker-live", "home", "staging") {
+		t.Error("wrong env suffix")
+	}
+}
+
+func TestServiceToSlug_edgeCases(t *testing.T) {
+	if got := ServiceToSlug("home-worker-staging", "home", "staging", ""); got != "worker" {
+		t.Errorf("empty defaultSlug still extracts middle: %q", got)
+	}
+}
+
 func TestRoundTrip(t *testing.T) {
 	cases := []struct {
 		service, appGroup, env string

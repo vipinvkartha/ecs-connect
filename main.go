@@ -1,8 +1,8 @@
 package main
 
 import (
-	"context"
 	"bufio"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -21,7 +21,7 @@ func main() {
 	cfg := parseFlags()
 
 	if _, err := exec.LookPath("session-manager-plugin"); err != nil {
-		fatal("session-manager-plugin not found in PATH.\n"+
+		fatal("session-manager-plugin not found in PATH.\n" +
 			"  Install: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html")
 	}
 
