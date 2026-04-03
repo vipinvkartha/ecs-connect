@@ -178,7 +178,7 @@ func listColumnWidth(m model) int {
 	if m.width <= 0 {
 		return 42
 	}
-	if m.step == stepSelectService {
+	if m.step == stepSelectService || m.step == stepSelectTask {
 		const gap = 4
 		previewMin := 28
 		listMin := 26
@@ -235,6 +235,14 @@ func previewInnerContent(m model) string {
 		return formatServiceInfo(m.currentPreview)
 	}
 	return themeDim().Render("No preview")
+}
+
+func taskPreviewInnerContent(m model) string {
+	t := m.currentTaskForPreview()
+	if t == nil {
+		return themeDim().Render("No preview")
+	}
+	return formatTaskInfo(t)
 }
 
 // ---------------------------------------------------------------------------
@@ -322,7 +330,11 @@ func (m model) View() string {
 
 	case stepSelectTask:
 		body.WriteString(m.breadcrumb())
-		body.WriteString(m.renderList("Select Task", m.applyFilter(taskLabels(m.taskItems)), m.taskCursor))
+		labels := taskLabels(m.taskItems)
+		visible, _ := applyFilterWithIndices(labels, m.filterText)
+		list := m.renderList("Select Task", visible, m.taskCursor)
+		preview := m.renderTaskPreviewPanel()
+		body.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, list, "  ", preview))
 
 	case stepSelectContainer:
 		body.WriteString(m.breadcrumb())
@@ -435,6 +447,8 @@ func (m model) renderFooter() string {
 		hints = []string{"type yes + enter", "b back", "esc cancel"}
 	} else if m.step == stepSelectService {
 		hints = []string{"↑/↓ navigate", "enter select", "/ filter", "[/] preview scroll", "b back", "esc cancel"}
+	} else if m.step == stepSelectTask {
+		hints = []string{"↑/↓ navigate", "enter select", "/ filter", "[/] task details scroll", "b back", "esc cancel"}
 	} else {
 		hints = []string{"↑/↓ navigate", "enter select", "/ filter", "b back", "esc cancel"}
 	}
@@ -614,6 +628,25 @@ func (m model) renderPreviewPanel() string {
 	return themePreviewBorder().Render(vpView) + scrollHint
 }
 
+func (m model) renderTaskPreviewPanel() string {
+	vpView := m.taskPreviewViewport.View()
+	scrollHint := ""
+	lines := m.taskPreviewViewport.TotalLineCount()
+	vh := m.taskPreviewViewport.Height
+	if vh > 0 && lines > vh {
+		if !m.taskPreviewViewport.AtBottom() {
+			below := lines - m.taskPreviewViewport.YOffset - vh
+			if below < 0 {
+				below = 0
+			}
+			scrollHint = themeDim().Render(fmt.Sprintf("\n  %d lines below · ]", below))
+		} else if !m.taskPreviewViewport.AtTop() {
+			scrollHint = themeDim().Render("\n  [ = scroll up")
+		}
+	}
+	return themePreviewBorder().Render(vpView) + scrollHint
+}
+
 func formatServiceInfo(info *cloud.ServiceInfo) string {
 	var b strings.Builder
 	b.WriteString(themeTitle().Render("Service Details"))
@@ -644,6 +677,71 @@ func formatServiceInfo(info *cloud.ServiceInfo) string {
 		b.WriteString("\n\n")
 		for _, d := range info.Deployments {
 			b.WriteString(formatDeploymentLine(d))
+			b.WriteString("\n")
+		}
+	}
+
+	return b.String()
+}
+
+func formatTaskInfo(t *cloud.TaskInfo) string {
+	var b strings.Builder
+	b.WriteString(themeTitle().Render("Task Details"))
+	b.WriteString("\n\n")
+
+	st := t.Status
+	if strings.EqualFold(st, "RUNNING") {
+		st = themeSuccess().Render(st)
+	} else {
+		st = themeWarning().Render(st)
+	}
+	b.WriteString(fmt.Sprintf("  Status    %s\n", st))
+
+	cpu := t.CPU
+	if cpu == "" {
+		cpu = "—"
+	}
+	mem := t.Memory
+	if mem == "" {
+		mem = "—"
+	}
+	b.WriteString(fmt.Sprintf("  CPU       %s\n", cpu))
+	b.WriteString(fmt.Sprintf("  Memory    %s\n", mem))
+
+	pf := t.PlatformFamily
+	if pf == "" {
+		pf = "—"
+	}
+	pv := t.PlatformVersion
+	if pv == "" {
+		pv = "—"
+	}
+	b.WriteString(fmt.Sprintf("  Platform  %s\n", pf))
+	b.WriteString(fmt.Sprintf("  Plat. ver %s\n", pv))
+	lt := t.LaunchType
+	if lt == "" {
+		lt = "—"
+	}
+	b.WriteString(fmt.Sprintf("  Launch    %s\n", lt))
+
+	started := "—"
+	if !t.StartedAt.IsZero() {
+		started = t.StartedAt.Format(time.RFC3339)
+	}
+	created := "—"
+	if !t.CreatedAt.IsZero() {
+		created = t.CreatedAt.Format(time.RFC3339)
+	}
+	b.WriteString(fmt.Sprintf("  Started   %s\n", started))
+	b.WriteString(fmt.Sprintf("  Created   %s\n", created))
+
+	if len(t.Containers) > 0 {
+		b.WriteString("\n")
+		b.WriteString(themeTitle().Render("Containers"))
+		b.WriteString("\n\n")
+		for _, c := range t.Containers {
+			b.WriteString(themeDim().Render("    · "))
+			b.WriteString(c)
 			b.WriteString("\n")
 		}
 	}

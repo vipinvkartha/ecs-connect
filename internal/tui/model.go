@@ -11,6 +11,7 @@ import (
 	"ecs-connect/internal/config"
 	"ecs-connect/internal/ddb"
 	"ecs-connect/internal/naming"
+	"ecs-connect/internal/recents"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -163,6 +164,10 @@ type model struct {
 	previewViewport  viewport.Model
 	previewScrollKey string // resets viewport scroll when service selection changes
 
+	// task list preview (metadata from TaskInfo)
+	taskPreviewViewport  viewport.Model
+	taskPreviewScrollKey string
+
 	// inline filter (activated with /)
 	filterText   string
 	filterActive bool
@@ -218,6 +223,9 @@ func newModel(opts Options) model {
 	vp := viewport.New(0, 0)
 	vp.MouseWheelEnabled = false
 
+	tvp := viewport.New(0, 0)
+	tvp.MouseWheelEnabled = false
+
 	dvp := viewport.New(0, 0)
 	dvp.MouseWheelEnabled = true
 
@@ -228,9 +236,10 @@ func newModel(opts Options) model {
 		confirmInput:    ti,
 		dynamoPKInput:   pki,
 		dynamoSKInput:   ski,
-		previewCache:    make(map[string]*cloud.ServiceInfo),
-		previewViewport: vp,
-		dynamoViewport:  dvp,
+		previewCache:        make(map[string]*cloud.ServiceInfo),
+		previewViewport:     vp,
+		taskPreviewViewport: tvp,
+		dynamoViewport:      dvp,
 		profile:         opts.Client.Profile,
 		cluster:         opts.Cluster,
 		service:         opts.Service,
@@ -390,6 +399,47 @@ func (m model) currentServiceKey() string {
 	return ""
 }
 
+func (m model) currentTaskForPreview() *cloud.TaskInfo {
+	if len(m.taskItems) == 0 {
+		return nil
+	}
+	labels := taskLabels(m.taskItems)
+	_, indices := applyFilterWithIndices(labels, m.filterText)
+	if len(indices) == 0 || m.taskCursor < 0 || m.taskCursor >= len(indices) {
+		return nil
+	}
+	ti := m.taskItems[indices[m.taskCursor]]
+	return &ti
+}
+
+func (m model) taskPreviewKey() string {
+	t := m.currentTaskForPreview()
+	if t == nil {
+		return ""
+	}
+	return t.ARN
+}
+
+// syncTaskPreview updates the task metadata viewport on the task pick step.
+func (m model) syncTaskPreview(resetScroll bool) model {
+	if m.step != stepSelectTask {
+		return m
+	}
+	w, h := previewViewportInnerSize(m)
+	vp := m.taskPreviewViewport
+	vp.Width = w
+	vp.Height = h
+	prevKey := m.taskPreviewScrollKey
+	vp.SetContent(taskPreviewInnerContent(m))
+	key := m.taskPreviewKey()
+	if resetScroll || key != prevKey {
+		vp.GotoTop()
+		m.taskPreviewScrollKey = key
+	}
+	m.taskPreviewViewport = vp
+	return m
+}
+
 // syncPreviewForService updates the right-hand preview viewport. When resetScroll
 // is false, vertical scroll is preserved (used while the loading spinner animates).
 func (m model) syncPreviewForService(serviceKey string, resetScroll bool) model {
@@ -411,14 +461,22 @@ func (m model) syncPreviewForService(serviceKey string, resetScroll bool) model 
 }
 
 func (m model) resizePreviewViewportOnly() model {
-	if m.step != stepSelectService {
+	if m.step == stepSelectService {
+		w, h := previewViewportInnerSize(m)
+		vp := m.previewViewport
+		vp.Width = w
+		vp.Height = h
+		m.previewViewport = vp
 		return m
 	}
-	w, h := previewViewportInnerSize(m)
-	vp := m.previewViewport
-	vp.Width = w
-	vp.Height = h
-	m.previewViewport = vp
+	if m.step == stepSelectTask {
+		w, h := previewViewportInnerSize(m)
+		vp := m.taskPreviewViewport
+		vp.Width = w
+		vp.Height = h
+		m.taskPreviewViewport = vp
+		return m
+	}
 	return m
 }
 
@@ -599,6 +657,7 @@ func (m model) tryWizardBack() (model, tea.Cmd, bool) {
 		m.resetFilter()
 		m.container = ""
 		m.step = stepSelectTask
+		m = m.syncTaskPreview(true)
 		return m, nil, true
 
 	default:
@@ -643,6 +702,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmd = m.updateServicePreview()
 					m = m.syncPreviewForService(m.currentServiceKey(), true)
 					return m, cmd
+				}
+				if m.step == stepSelectTask {
+					m = m.syncTaskPreview(true)
 				}
 				return m, nil
 			}
@@ -715,6 +777,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		if m.step == stepSelectTask && !m.filterActive {
+			switch msg.String() {
+			case "[":
+				vp := m.taskPreviewViewport
+				vp.ScrollUp(3)
+				m.taskPreviewViewport = vp
+				return m, nil
+			case "]":
+				vp := m.taskPreviewViewport
+				vp.ScrollDown(3)
+				m.taskPreviewViewport = vp
+				return m, nil
+			}
+		}
+
 		if m.filterActive && m.isListStep() {
 			key := msg.String()
 			switch key {
@@ -731,6 +808,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m = m.syncPreviewForService(m.currentServiceKey(), true)
 					return m, cmd
 				}
+				if m.step == stepSelectTask {
+					m = m.syncTaskPreview(true)
+				}
 				return m, nil
 			case "up", "down", "enter":
 				// fall through to step-specific handlers
@@ -742,6 +822,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmd := m.updateServicePreview()
 						m = m.syncPreviewForService(m.currentServiceKey(), true)
 						return m, cmd
+					}
+					if m.step == stepSelectTask {
+						m = m.syncTaskPreview(true)
 					}
 				}
 				return m, nil
@@ -938,12 +1021,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case stepSelectTask:
 			labels := taskLabels(m.taskItems)
 			visible, indices := applyFilterWithIndices(labels, m.filterText)
+			prev := m.taskCursor
 			if listNav(msg, &m.taskCursor, len(visible)) {
 				if len(indices) > 0 && m.taskCursor < len(indices) {
 					t := m.taskItems[indices[m.taskCursor]]
 					m.taskARN = t.ARN
 					m.taskShortID = t.ShortID
 					m.resetFilter()
+					m = m.syncTaskPreview(true)
 					if len(t.Containers) == 1 {
 						m.container = t.Containers[0]
 						return m, m.done()
@@ -956,6 +1041,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.containerItems = t.Containers
 					m.step = stepSelectContainer
 				}
+			} else if m.taskCursor != prev && len(visible) > 0 {
+				m = m.syncTaskPreview(true)
 			}
 
 		case stepSelectContainer:
@@ -975,6 +1062,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		if m.step == stepSelectService && m.previewLoading {
 			m = m.syncPreviewForService(m.currentServiceKey(), false)
+		}
+		if m.step == stepSelectTask {
+			m = m.syncTaskPreview(false)
 		}
 		return m, cmd
 
@@ -1252,6 +1342,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.taskItems = tasks
 		m.step = stepSelectTask
+		m = m.syncTaskPreview(true)
 		return m, nil
 
 	case errMsg:
@@ -1298,6 +1389,16 @@ func (m *model) done() tea.Cmd {
 			Container:   m.container,
 		},
 	}
+	_ = recents.Save(m.client.Profile, recents.Target{
+		Cluster:     m.cluster,
+		Service:     m.service,
+		TaskARN:     m.taskARN,
+		TaskShortID: m.taskShortID,
+		Container:   m.container,
+		Environment: m.environment,
+		AppGroup:    m.appGroup,
+		Slug:        m.slug,
+	})
 	return tea.Quit
 }
 

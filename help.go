@@ -81,6 +81,7 @@ func renderHelp() string {
 		dim.Render("Usage"),
 		"",
 		accent.Render("  ecs-connect")+dim.Render(" [flags]"),
+		dim.Render("  ecs-connect --reconnect"+accent.Render(" [--profile <name>]")+dim.Render("  (last ECS target for profile)")),
 	)
 	usageBlock := usageBox.Width(innerW).Render(usageInner)
 
@@ -106,6 +107,11 @@ func renderHelp() string {
 		{"--cluster <name>", "", []string{"ECS cluster — skip interactive cluster selection."}},
 		{"--service <name>", "", []string{"ECS service — skip interactive service selection."}},
 		{"--container <name>", "", []string{"ECS container — skip picker when it matches the task (use with cluster + service)."}},
+		{"--reconnect", "", []string{
+			"Skip the wizard and exec into the last saved ECS target for this profile.",
+			"Requires a prior successful connect (writes ~/.ecs-connect/recents.json).",
+			"Verifies the task is still RUNNING and the container name still exists.",
+		}},
 		{"--quiet", "ECS_CONNECT_QUIET=1", []string{"Suppress the startup banner."}},
 		{"--help", "", []string{"Show this help message."}},
 	}
@@ -119,6 +125,24 @@ func renderHelp() string {
 		rule.Render(strings.Repeat("─", min(innerW, 72))),
 		"",
 	}, flagBlocks...)...)
+
+	reconnectBody := strings.Join([]string{
+		dim.Render("After a successful ECS exec, the tool saves cluster, service, task ARN,"),
+		dim.Render("and container (plus optional naming fields) to:"),
+		"",
+		"  " + bullet.Render("•") + "  " + accent.Render("~/.ecs-connect/recents.json") + dim.Render(" — one entry per AWS profile"),
+		"",
+		dim.Render("--reconnect skips the TUI, loads that entry; DescribeTask must show RUNNING,"),
+		dim.Render("container name must still exist — then starts session-manager-plugin."),
+		dim.Render("No entry or verify failure → error; use the wizard or --cluster/--service."),
+	}, "\n")
+	reconnectSection := lipgloss.JoinVertical(lipgloss.Left,
+		"",
+		section.Render("Reconnect (--reconnect)"),
+		rule.Render(strings.Repeat("─", min(innerW, 72))),
+		"",
+		reconnectBody,
+	)
 
 	authSteps := []string{
 		"If --profile / AWS_PROFILE / config profile is set → uses that profile.",
@@ -165,6 +189,7 @@ func renderHelp() string {
 		{"ecs-connect", "Interactive wizard"},
 		{"ecs-connect --profile prod", "Use specific profile"},
 		{"ecs-connect --cluster my-cluster --service web", "Skip cluster & service pickers"},
+		{"ecs-connect --reconnect", "Reuse last cluster/service/task/container for this profile"},
 		{"ecs-connect --cluster c --service s --container app", "Also skip container when it matches"},
 		{"ecs-connect --command /bin/bash", "Use bash instead of sh"},
 		{"AWS_PROFILE=prod ecs-connect", "Profile via env var"},
@@ -190,6 +215,7 @@ func renderHelp() string {
 		usageBlock,
 		"",
 		flagsSection,
+		reconnectSection,
 		authSection,
 		configSection,
 		exSection,

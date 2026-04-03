@@ -32,13 +32,23 @@ func main() {
 	opts.Service = cfg.Service
 	opts.Container = cfg.Container
 
-	outcome, client, err := tui.Run(opts)
-	if err != nil {
-		if err == tui.ErrCancelled {
-			fmt.Println("\n  Cancelled.")
-			return
+	var outcome *tui.Outcome
+	if cfg.Reconnect {
+		var err error
+		outcome, err = tui.ReconnectToRecents(context.Background(), client)
+		if err != nil {
+			fatal("%v", err)
 		}
-		fatal("%v", err)
+	} else {
+		var err error
+		outcome, client, err = tui.Run(opts)
+		if err != nil {
+			if err == tui.ErrCancelled {
+				fmt.Println("\n  Cancelled.")
+				return
+			}
+			fatal("%v", err)
+		}
 	}
 
 	if outcome.Mode == tui.ModeDynamoDB {
@@ -77,6 +87,7 @@ type cliConfig struct {
 	Cluster         string
 	Service         string
 	Container       string
+	Reconnect       bool
 	profileExplicit bool
 	regionExplicit  bool
 	commandExplicit bool
@@ -100,6 +111,8 @@ func parseFlags() cliConfig {
 		"ECS service name (skip interactive selection)")
 	flag.StringVar(&c.Container, "container", "",
 		"ECS container name (skip picker when task uniquely matches)")
+	flag.BoolVar(&c.Reconnect, "reconnect", false,
+		"Skip the wizard: use last ECS target for this profile (~/.ecs-connect/recents.json)")
 
 	flag.Usage = printHelp
 	flag.Parse()

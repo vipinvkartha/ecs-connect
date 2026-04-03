@@ -174,11 +174,17 @@ func (c *Client) DescribeService(ctx context.Context, cluster, service string) (
 
 // TaskInfo holds details about a running ECS task.
 type TaskInfo struct {
-	ARN        string
-	ShortID    string
-	CreatedAt  time.Time
-	Status     string
-	Containers []string
+	ARN             string
+	ShortID         string
+	CreatedAt       time.Time
+	StartedAt       time.Time
+	Status          string
+	Containers      []string
+	CPU             string
+	Memory          string
+	PlatformFamily  string
+	PlatformVersion string
+	LaunchType      string
 }
 
 // ListRunningTasks returns running tasks for a service, sorted newest-first.
@@ -215,20 +221,7 @@ func (c *Client) ListRunningTasks(ctx context.Context, cluster, service string) 
 			return nil, err
 		}
 		for _, t := range desc.Tasks {
-			var containers []string
-			for _, ct := range t.Containers {
-				containers = append(containers, aws.ToString(ct.Name))
-			}
-			ti := TaskInfo{
-				ARN:        aws.ToString(t.TaskArn),
-				ShortID:    arnName(aws.ToString(t.TaskArn)),
-				Status:     aws.ToString(t.LastStatus),
-				Containers: containers,
-			}
-			if t.CreatedAt != nil {
-				ti.CreatedAt = *t.CreatedAt
-			}
-			tasks = append(tasks, ti)
+			tasks = append(tasks, taskInfoFromTypes(t))
 		}
 	}
 
@@ -236,6 +229,49 @@ func (c *Client) ListRunningTasks(ctx context.Context, cluster, service string) 
 		return tasks[i].CreatedAt.After(tasks[j].CreatedAt)
 	})
 	return tasks, nil
+}
+
+// DescribeTask returns TaskInfo for a single task ARN, or an error if it is missing.
+func (c *Client) DescribeTask(ctx context.Context, cluster, taskARN string) (*TaskInfo, error) {
+	out, err := c.ecs.DescribeTasks(ctx, &ecs.DescribeTasksInput{
+		Cluster: aws.String(cluster),
+		Tasks:   []string{taskARN},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(out.Tasks) == 0 {
+		return nil, fmt.Errorf("task not found")
+	}
+	ti := taskInfoFromTypes(out.Tasks[0])
+	return &ti, nil
+}
+
+func taskInfoFromTypes(t ecstypes.Task) TaskInfo {
+	var containers []string
+	for _, ct := range t.Containers {
+		containers = append(containers, aws.ToString(ct.Name))
+	}
+	ti := TaskInfo{
+		ARN:             aws.ToString(t.TaskArn),
+		ShortID:         arnName(aws.ToString(t.TaskArn)),
+		Status:          aws.ToString(t.LastStatus),
+		Containers:      containers,
+		CPU:             aws.ToString(t.Cpu),
+		Memory:          aws.ToString(t.Memory),
+		PlatformFamily:  aws.ToString(t.PlatformFamily),
+		PlatformVersion: aws.ToString(t.PlatformVersion),
+	}
+	if t.LaunchType != "" {
+		ti.LaunchType = string(t.LaunchType)
+	}
+	if t.CreatedAt != nil {
+		ti.CreatedAt = *t.CreatedAt
+	}
+	if t.StartedAt != nil {
+		ti.StartedAt = *t.StartedAt
+	}
+	return ti
 }
 
 // ExecSession holds the session-manager-plugin connection details.

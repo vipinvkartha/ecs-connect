@@ -25,7 +25,13 @@ go build -o ecs-connect .
 
 # Suppress the banner (ECS path only affects banner; Dynamo path still prints JSON)
 ECS_CONNECT_QUIET=1 ./ecs-connect
+
+# Skip the wizard: reconnect to the last ECS target saved for this profile
+./ecs-connect --reconnect
+./ecs-connect --profile prod --reconnect
 ```
+
+After a successful **ECS** connect, the tool writes **`~/.ecs-connect/recents.json`** (per AWS profile). **`--reconnect`** loads that target, checks the task is still **RUNNING** and the container still exists, then opens a session — see [Reconnect](#reconnect).
 
 See **`ecs-connect.example.yaml`** in the repo for a commented file with every supported config key — copy it to `.ecs-connect.yaml` and edit.
 
@@ -121,6 +127,20 @@ When prompted, the profile picker looks like this:
 5. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
 6. **Select container** — auto-selects if the task has a single container; prompts otherwise. Skipped when `--container` / `defaults.container` matches (see [Flags](#flags-and-environment-variables)).
 7. **Connect** — calls `ExecuteCommand` and hands off to `session-manager-plugin`.
+
+### Reconnect
+
+Use the **`--reconnect`** flag to skip the wizard and reuse the last ECS target for the current AWS profile.
+
+Successful **ECS** runs (interactive wizard or flags that complete an exec) save the last target under **`~/.ecs-connect/recents.json`**, keyed by AWS profile: cluster, service, task ARN, container, plus optional naming fields (`environment`, `app_group`, `slug`).
+
+| | |
+|---|---|
+| **`--reconnect`** | Skip the TUI. Load the saved target for the current profile, call **`DescribeTask`** to confirm the task is **`RUNNING`**, confirm the saved **container** name is still on the task, then start **`session-manager-plugin`** like a normal connect. |
+| **No saved target / verify failed** | Exit with an error (e.g. task stopped, new deployment, container renamed). Use the interactive wizard or `--cluster` / `--service` to pick a new target. |
+| **DynamoDB** | **`--reconnect`** only applies to ECS (saved recents are ECS targets). |
+
+Examples: `ecs-connect --reconnect`, `ecs-connect --profile prod --reconnect`. Same flag is documented in **`ecs-connect --help`**.
 
 ### With config file (environment-based naming, ECS path)
 
@@ -310,6 +330,7 @@ All settings can be passed as flags or environment variables. Flags take precede
 | `--cluster` | | | ECS cluster (skip interactive selection) |
 | `--service` | | | ECS service (skip interactive selection) |
 | `--container` | | | ECS container name — skip picker when it matches the task (use with `--cluster` / `--service`; see code for multi-task rules) |
+| `--reconnect` | | off | **ECS only.** Skip the wizard and use the last target from `~/.ecs-connect/recents.json` for this profile; verifies task is RUNNING and container exists ([Reconnect](#reconnect)). |
 | `--quiet` | `ECS_CONNECT_QUIET=1` | off | Suppress the startup banner (**ECS** path); Dynamo path still prints JSON |
 
 **session-manager-plugin** is only required when you complete an **ECS** session — it is **not** needed for DynamoDB-only use.
@@ -340,10 +361,13 @@ ecs-connect/
 │   │   └── ddb.go           DynamoDB list / describe / query + JSON helpers
 │   ├── naming/
 │   │   └── naming.go        Cluster/service naming conventions
+│   ├── recents/
+│   │   └── recents.go       ~/.ecs-connect/recents.json (last ECS target per profile)
 │   └── tui/
 │       ├── model.go         Bubble Tea model, ECS + Dynamo flows
 │       ├── view.go          Lipgloss UI, preview + Dynamo results
 │       ├── outcome.go       ECS result vs Dynamo outcome
+│       ├── reconnect.go     --reconnect (verify saved target, no wizard)
 │       └── clip.go          Clipboard helper (Dynamo results)
 ├── .goreleaser.yaml
 ├── go.mod
@@ -364,11 +388,11 @@ ecs-connect/
 | `Esc` | Clear filter, or cancel / quit (see on-screen footer) |
 | `Ctrl+C` | Quit |
 
-### Service step only
+### Service and task steps
 
 | Key | Action |
 |---|---|
-| `[` / `]` | Scroll service preview panel |
+| `[` / `]` | Scroll service **or** task metadata preview panel |
 
 ### DynamoDB query results
 
