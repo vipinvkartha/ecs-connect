@@ -26,12 +26,14 @@ go build -o ecs-connect .
 # Suppress the banner (ECS path only affects banner; Dynamo path still prints JSON)
 ECS_CONNECT_QUIET=1 ./ecs-connect
 
-# Skip the wizard: reconnect to the last ECS target saved for this profile
-./ecs-connect --reconnect
-./ecs-connect --profile prod --reconnect
+# Skip the wizard: reconnect to a saved ECS target (up to 3 per profile, newest first)
+./ecs-connect --reconnect              # most recent
+./ecs-connect --reconnect=prev         # 2nd-most-recent
+./ecs-connect --reconnect=old          # 3rd (oldest kept)
+./ecs-connect --profile prod --reconnect=prev
 ```
 
-After a successful **ECS** connect, the tool writes **`~/.ecs-connect/recents.json`** (per AWS profile). **`--reconnect`** loads that target, checks the task is still **RUNNING** and the container still exists, then opens a session — see [Reconnect](#reconnect).
+After a successful **ECS** connect, the tool updates **`~/.ecs-connect/recents.json`** (per AWS profile) with a short history. **`--reconnect`** picks a slot (**`recent`** / **`prev`** / **`old`**), verifies the task is still **RUNNING** and the container still exists, then opens a session — see [Reconnect](#reconnect).
 
 See **`ecs-connect.example.yaml`** in the repo for a commented file with every supported config key — copy it to `.ecs-connect.yaml` and edit.
 
@@ -130,17 +132,25 @@ When prompted, the profile picker looks like this:
 
 ### Reconnect
 
-Use the **`--reconnect`** flag to skip the wizard and reuse the last ECS target for the current AWS profile.
+Skip the wizard with **`--reconnect`**: reuse a **saved ECS target** for the current AWS profile. The tool keeps up to **three** distinct targets per profile (by task ARN), **newest first**.
 
-Successful **ECS** runs (interactive wizard or flags that complete an exec) save the last target under **`~/.ecs-connect/recents.json`**, keyed by AWS profile: cluster, service, task ARN, container, plus optional naming fields (`environment`, `app_group`, `slug`).
+Successful **ECS** runs prepend a snapshot to **`~/.ecs-connect/recents.json`**: cluster, service, task ARN, container, plus optional naming fields (`environment`, `app_group`, `slug`). Re-connecting to the **same** task ARN again moves it to the front instead of duplicating.
+
+| Slot | Flag | Meaning |
+|---|---|---|
+| Most recent | **`--reconnect`** or **`--reconnect=recent`** | Latest saved target |
+| 2nd | **`--reconnect=prev`** | Previous distinct target |
+| 3rd | **`--reconnect=old`** | Third (oldest kept) |
+
+Aliases match **`ecs-connect --help`** (e.g. `prev` / `p` / `2nd`; `old` / `o` / `3rd`).
 
 | | |
 |---|---|
-| **`--reconnect`** | Skip the TUI. Load the saved target for the current profile, call **`DescribeTask`** to confirm the task is **`RUNNING`**, confirm the saved **container** name is still on the task, then start **`session-manager-plugin`** like a normal connect. |
-| **No saved target / verify failed** | Exit with an error (e.g. task stopped, new deployment, container renamed). Use the interactive wizard or `--cluster` / `--service` to pick a new target. |
-| **DynamoDB** | **`--reconnect`** only applies to ECS (saved recents are ECS targets). |
+| **Verify** | **`DescribeTask`** must show **`RUNNING`**; the saved **container** name must still be on the task; then **`session-manager-plugin`** runs like a normal connect. |
+| **Too few slots / verify failed** | Exit with an error (e.g. only one saved target but **`--reconnect=old`**). Use the wizard or **`--cluster` / `--service`**. |
+| **DynamoDB** | **`--reconnect`** is **ECS-only** (recents are ECS targets). |
 
-Examples: `ecs-connect --reconnect`, `ecs-connect --profile prod --reconnect`. Same flag is documented in **`ecs-connect --help`**.
+Examples: `ecs-connect --reconnect`, `ecs-connect --reconnect=prev --profile prod`. See **`ecs-connect --help`**.
 
 ### With config file (environment-based naming, ECS path)
 
@@ -330,7 +340,7 @@ All settings can be passed as flags or environment variables. Flags take precede
 | `--cluster` | | | ECS cluster (skip interactive selection) |
 | `--service` | | | ECS service (skip interactive selection) |
 | `--container` | | | ECS container name — skip picker when it matches the task (use with `--cluster` / `--service`; see code for multi-task rules) |
-| `--reconnect` | | off | **ECS only.** Skip the wizard and use the last target from `~/.ecs-connect/recents.json` for this profile; verifies task is RUNNING and container exists ([Reconnect](#reconnect)). |
+| `--reconnect` | | off | **ECS only.** Skip the wizard; use saved targets from `~/.ecs-connect/recents.json` (up to 3 per profile, newest first). Default flag: most recent; **`=prev`** second; **`=old`** third. Verifies RUNNING + container ([Reconnect](#reconnect)). |
 | `--quiet` | `ECS_CONNECT_QUIET=1` | off | Suppress the startup banner (**ECS** path); Dynamo path still prints JSON |
 
 **session-manager-plugin** is only required when you complete an **ECS** session — it is **not** needed for DynamoDB-only use.
@@ -362,7 +372,7 @@ ecs-connect/
 │   ├── naming/
 │   │   └── naming.go        Cluster/service naming conventions
 │   ├── recents/
-│   │   └── recents.go       ~/.ecs-connect/recents.json (last ECS target per profile)
+│   │   └── recents.go       ~/.ecs-connect/recents.json (up to 3 ECS targets per profile)
 │   └── tui/
 │       ├── model.go         Bubble Tea model, ECS + Dynamo flows
 │       ├── view.go          Lipgloss UI, preview + Dynamo results

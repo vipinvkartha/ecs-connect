@@ -81,7 +81,7 @@ func renderHelp() string {
 		dim.Render("Usage"),
 		"",
 		accent.Render("  ecs-connect")+dim.Render(" [flags]"),
-		dim.Render("  ecs-connect --reconnect"+accent.Render(" [--profile <name>]")+dim.Render("  (last ECS target for profile)")),
+		dim.Render("  ecs-connect --reconnect"+dim.Render(" | ")+accent.Render("--reconnect=prev")+dim.Render(" | ")+accent.Render("--reconnect=old")+dim.Render("  (+ optional --profile)")),
 	)
 	usageBlock := usageBox.Width(innerW).Render(usageInner)
 
@@ -107,10 +107,10 @@ func renderHelp() string {
 		{"--cluster <name>", "", []string{"ECS cluster — skip interactive cluster selection."}},
 		{"--service <name>", "", []string{"ECS service — skip interactive service selection."}},
 		{"--container <name>", "", []string{"ECS container — skip picker when it matches the task (use with cluster + service)."}},
-		{"--reconnect", "", []string{
-			"Skip the wizard and exec into the last saved ECS target for this profile.",
-			"Requires a prior successful connect (writes ~/.ecs-connect/recents.json).",
-			"Verifies the task is still RUNNING and the container name still exists.",
+		{"--reconnect [=recent|prev|old]", "", []string{
+			"Skip the wizard; exec into a saved ECS target for this profile (up to 3, newest-first).",
+			"  --reconnect       → most recent  ·  --reconnect=prev → 2nd  ·  --reconnect=old → 3rd",
+			"Stored in ~/.ecs-connect/recents.json after successful connects; DescribeTask must be RUNNING.",
 		}},
 		{"--quiet", "ECS_CONNECT_QUIET=1", []string{"Suppress the startup banner."}},
 		{"--help", "", []string{"Show this help message."}},
@@ -127,14 +127,16 @@ func renderHelp() string {
 	}, flagBlocks...)...)
 
 	reconnectBody := strings.Join([]string{
-		dim.Render("After a successful ECS exec, the tool saves cluster, service, task ARN,"),
-		dim.Render("and container (plus optional naming fields) to:"),
+		dim.Render("Each successful ECS exec prepends a target for that AWS profile (deduped by task ARN,"),
+		dim.Render("max 3 per profile): cluster, service, task ARN, container, optional naming fields."),
 		"",
-		"  " + bullet.Render("•") + "  " + accent.Render("~/.ecs-connect/recents.json") + dim.Render(" — one entry per AWS profile"),
+		"  " + bullet.Render("•") + "  " + accent.Render("~/.ecs-connect/recents.json"),
 		"",
-		dim.Render("--reconnect skips the TUI, loads that entry; DescribeTask must show RUNNING,"),
-		dim.Render("container name must still exist — then starts session-manager-plugin."),
-		dim.Render("No entry or verify failure → error; use the wizard or --cluster/--service."),
+		dim.Render("Slots (newest first):  ") + accent.Render("recent") + dim.Render(" (default),  ") +
+			accent.Render("prev") + dim.Render(",  ") + accent.Render("old") + dim.Render("."),
+		dim.Render("Aliases: recent/r/last; prev/p/previous/2nd; old/o/3rd."),
+		dim.Render("DescribeTask must be RUNNING and the container must still exist — then session-manager-plugin."),
+		dim.Render("Too few saved targets or verify failure → error; use the wizard or --cluster/--service."),
 	}, "\n")
 	reconnectSection := lipgloss.JoinVertical(lipgloss.Left,
 		"",
@@ -189,7 +191,9 @@ func renderHelp() string {
 		{"ecs-connect", "Interactive wizard"},
 		{"ecs-connect --profile prod", "Use specific profile"},
 		{"ecs-connect --cluster my-cluster --service web", "Skip cluster & service pickers"},
-		{"ecs-connect --reconnect", "Reuse last cluster/service/task/container for this profile"},
+		{"ecs-connect --reconnect", "Most recent saved ECS target"},
+		{"ecs-connect --reconnect=prev", "2nd-most-recent target"},
+		{"ecs-connect --reconnect=old", "3rd (oldest kept) target"},
 		{"ecs-connect --cluster c --service s --container app", "Also skip container when it matches"},
 		{"ecs-connect --command /bin/bash", "Use bash instead of sh"},
 		{"AWS_PROFILE=prod ecs-connect", "Profile via env var"},

@@ -9,18 +9,28 @@ import (
 	"ecs-connect/internal/recents"
 )
 
-// ReconnectToRecents loads the last successful ECS exec target for the client's
-// AWS profile, verifies the task is RUNNING and the container still exists,
-// and returns an outcome without opening the interactive wizard.
-func ReconnectToRecents(ctx context.Context, client *cloud.Client) (*Outcome, error) {
+// ReconnectToRecents loads a saved ECS exec target for the client's profile.
+// historyIndex is 0 = most recent (--reconnect), 1 = previous (--reconnect=prev),
+// 2 = third (--reconnect=old). The task must be RUNNING and the container must
+// still exist on the task.
+func ReconnectToRecents(ctx context.Context, client *cloud.Client, historyIndex int) (*Outcome, error) {
 	if client == nil {
 		return nil, fmt.Errorf("AWS client is nil")
 	}
-	prof := client.Profile
-	rt, ok := recents.Load(prof)
-	if !ok {
-		return nil, fmt.Errorf("no saved ECS target for profile %q — connect interactively once, or see ~/.ecs-connect/recents.json", prof)
+	if historyIndex < 0 || historyIndex > 2 {
+		return nil, fmt.Errorf("invalid reconnect slot %d (use 0–2)", historyIndex)
 	}
+	prof := client.Profile
+	all, ok := recents.LoadAll(prof)
+	if !ok || len(all) == 0 {
+		return nil, fmt.Errorf("no saved ECS targets for profile %q — connect interactively once, or see ~/.ecs-connect/recents.json", prof)
+	}
+	if historyIndex >= len(all) {
+		slot := reconnectSlotLabel(historyIndex)
+		return nil, fmt.Errorf("profile %q has only %d saved target(s); --reconnect=%s needs at least %d (newest-first: recent, prev, old)",
+			prof, len(all), slot, historyIndex+1)
+	}
+	rt := all[historyIndex]
 	info, err := client.DescribeTask(ctx, rt.Cluster, rt.TaskARN)
 	if err != nil {
 		return nil, fmt.Errorf("describe task: %w", err)
@@ -52,4 +62,17 @@ func ReconnectToRecents(ctx context.Context, client *cloud.Client) (*Outcome, er
 			Container:   rt.Container,
 		},
 	}, nil
+}
+
+func reconnectSlotLabel(i int) string {
+	switch i {
+	case 0:
+		return "recent"
+	case 1:
+		return "prev"
+	case 2:
+		return "old"
+	default:
+		return fmt.Sprintf("index%d", i)
+	}
 }

@@ -17,6 +17,54 @@ import (
 	"ecs-connect/internal/tui"
 )
 
+// reconnectFlag implements flag.Value for --reconnect and --reconnect=recent|prev|old.
+type reconnectFlag struct {
+	set   bool
+	index int // 0, 1, or 2
+}
+
+func (r *reconnectFlag) String() string {
+	if !r.set {
+		return "false"
+	}
+	switch r.index {
+	case 0:
+		return "recent"
+	case 1:
+		return "prev"
+	case 2:
+		return "old"
+	default:
+		return "recent"
+	}
+}
+
+func (r *reconnectFlag) IsBoolFlag() bool { return true }
+
+func (r *reconnectFlag) Set(s string) error {
+	ls := strings.ToLower(strings.TrimSpace(s))
+	if ls == "false" {
+		r.set = false
+		return nil
+	}
+	r.set = true
+	if ls == "" || ls == "true" {
+		r.index = 0
+		return nil
+	}
+	switch ls {
+	case "recent", "r", "last", "latest", "0":
+		r.index = 0
+	case "prev", "p", "previous", "1", "2nd", "second":
+		r.index = 1
+	case "old", "o", "2", "3rd", "third":
+		r.index = 2
+	default:
+		return fmt.Errorf("invalid --reconnect value %q; use recent, prev, or old", s)
+	}
+	return nil
+}
+
 func main() {
 	cfg := parseFlags()
 
@@ -33,9 +81,9 @@ func main() {
 	opts.Container = cfg.Container
 
 	var outcome *tui.Outcome
-	if cfg.Reconnect {
+	if cfg.Reconnect.set {
 		var err error
-		outcome, err = tui.ReconnectToRecents(context.Background(), client)
+		outcome, err = tui.ReconnectToRecents(context.Background(), client, cfg.Reconnect.index)
 		if err != nil {
 			fatal("%v", err)
 		}
@@ -87,7 +135,7 @@ type cliConfig struct {
 	Cluster         string
 	Service         string
 	Container       string
-	Reconnect       bool
+	Reconnect       reconnectFlag
 	profileExplicit bool
 	regionExplicit  bool
 	commandExplicit bool
@@ -111,8 +159,8 @@ func parseFlags() cliConfig {
 		"ECS service name (skip interactive selection)")
 	flag.StringVar(&c.Container, "container", "",
 		"ECS container name (skip picker when task uniquely matches)")
-	flag.BoolVar(&c.Reconnect, "reconnect", false,
-		"Skip the wizard: use last ECS target for this profile (~/.ecs-connect/recents.json)")
+	flag.Var(&c.Reconnect, "reconnect",
+		"Skip the wizard: reconnect to a saved ECS target (recent=default, prev=2nd, old=3rd); use =prev or =old (~/.ecs-connect/recents.json)")
 
 	flag.Usage = printHelp
 	flag.Parse()
