@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+func TestHasYAMLDefaults(t *testing.T) {
+	if HasYAMLDefaults(nil) {
+		t.Fatal("nil")
+	}
+	if HasYAMLDefaults(&Config{}) {
+		t.Fatal("no defaults key")
+	}
+	if HasYAMLDefaults(&Config{Defaults: &Defaults{}}) {
+		t.Fatal("empty defaults")
+	}
+	if !HasYAMLDefaults(&Config{Defaults: &Defaults{Backend: "ecs"}}) {
+		t.Fatal("want true for backend")
+	}
+	if !HasYAMLDefaults(&Config{Defaults: &Defaults{Cluster: "c"}}) {
+		t.Fatal("want true for cluster")
+	}
+}
+
 func TestNormalizeBackend(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"ecs", "ecs"},

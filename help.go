@@ -112,6 +112,11 @@ func renderHelp() string {
 			"  --reconnect       → most recent  ·  --reconnect=prev → 2nd  ·  --reconnect=old → 3rd",
 			"Stored in ~/.ecs-connect/recents.json after successful connects; DescribeTask must be RUNNING.",
 		}},
+		{"--default", "", []string{
+			"Apply the config file defaults: map (backend, environment, cluster, service, container, dynamo_*, defaults.profile).",
+			"Without this flag, defaults: in YAML is ignored. Top-level profile, region, command still apply from YAML.",
+			"If defaults: is missing or has no values, prints a notice to stderr and continues.",
+		}},
 		{"--quiet", "ECS_CONNECT_QUIET=1", []string{"Suppress the startup banner."}},
 		{"--help", "", []string{"Show this help message."}},
 	}

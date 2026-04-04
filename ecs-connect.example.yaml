@@ -47,6 +47,8 @@ environments:
 # service:        full ECS service name, or slug when using naming mode
 # dynamo_table:   exact DynamoDB table name (after keyword filter)
 # dynamo_keyword: substring to filter table names when NOT using environments / naming
+#
+# The entire `defaults:` map is ignored unless you run: ecs-connect --default
 
 defaults:
   profile: fallback-profile-if-root-profile-omitted

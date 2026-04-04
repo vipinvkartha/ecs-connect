@@ -61,7 +61,7 @@ Local snapshot without publishing: `goreleaser release --snapshot --clean` (does
 
 ### Choose backend (after auth)
 
-Unless `defaults.backend` is set in your config (`ecs` or `dynamo`), the first screen lets you pick:
+Unless you pass **`--default`** and `defaults.backend` is set in your config (`ecs` or `dynamo`), the first screen lets you pick:
 
 - **ECS Exec (containers)** — interactive flow below; requires **session-manager-plugin** and ECS Exec on the service.
 - **DynamoDB (query tables)** — no session-manager plugin; uses the AWS SDK for DynamoDB in the configured region.
@@ -69,9 +69,9 @@ Unless `defaults.backend` is set in your config (`ecs` or `dynamo`), the first s
 ### DynamoDB flow (read-only v1)
 
 1. Connect DynamoDB client (same profile/region as ECS).
-2. **With config `environments`:** pick environment (or use `defaults.environment`) — optional production **confirm** — list tables whose **names contain** that keyword (case-insensitive substring).
-3. **Without naming config:** pick `staging` / `production` as the keyword, or set `defaults.dynamo_keyword`.
-4. Pick table (or `defaults.dynamo_table` if it matches after filtering).
+2. **With config `environments`:** pick environment (or use `defaults.environment` **with `--default`**) — optional production **confirm** — list tables whose **names contain** that keyword (case-insensitive substring).
+3. **Without naming config:** pick `staging` / `production` as the keyword, or set `defaults.dynamo_keyword` **with `--default`**.
+4. Pick table (or `defaults.dynamo_table` **with `--default`** if it matches after filtering).
 5. Enter partition key value (+ sort key if the table has one; sort key is **optional** — leave empty to query the whole partition within the limit).
 6. View JSON results: **mouse wheel** to scroll, **`[` / `]`** keyboard scroll, **`c` / `y`** copy JSON (OS clipboard, with OSC 52 fallback), **`r`** new query, **`e`** edit keys, **`b`** back, **`Esc`** exit and print the last result.
 
@@ -123,11 +123,11 @@ When prompted, the profile picker looks like this:
 ```
 
 1. **Auth** — resolves credentials automatically (see authentication flow above). Only prompts if no active session is found anywhere.
-2. **Backend** — pick ECS or DynamoDB, or skip via `defaults.backend` in YAML.
+2. **Backend** — pick ECS or DynamoDB, or skip via `defaults.backend` **with `--default`**.
 3. **Select cluster** — lists all ECS clusters in the account.
 4. **Select service** — lists all services in the selected cluster with a live preview panel showing service health and the last 10 deployments (rollout state, task definition, age, running/desired counts).
 5. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
-6. **Select container** — auto-selects if the task has a single container; prompts otherwise. Skipped when `--container` / `defaults.container` matches (see [Flags](#flags-and-environment-variables)).
+6. **Select container** — auto-selects if the task has a single container; prompts otherwise. Skipped when `--container` / **`defaults.container` with `--default`** matches (see [Flags](#flags-and-environment-variables)).
 7. **Connect** — calls `ExecuteCommand` and hands off to `session-manager-plugin`.
 
 ### Reconnect
@@ -166,13 +166,13 @@ When a `.ecs-connect.yaml` config file is present with environments defined, the
 ```
 
 1. **Auth** — same auto-detect flow as default mode.
-2. **Backend** — pick ECS or DynamoDB, or use `defaults.backend`.
-3. **Select environment** — from the environments listed in the config file (skippable via `defaults.environment` when it matches a defined env).
+2. **Backend** — pick ECS or DynamoDB, or use `defaults.backend` **with `--default`**.
+3. **Select environment** — from the environments listed in the config file (skippable via `defaults.environment` **with `--default`** when it matches a defined env).
 4. **Select cluster** — lists clusters ending with `-{env}` (e.g. `home-staging`).
 5. **Select service** — maps ECS services to friendly slugs (`web`, `worker`, …) with a live preview panel showing service health and recent deployments.
 6. **Confirmation** — if the selected environment has `confirm: true`, you must type `yes` to proceed (ECS and Dynamo naming flows).
 7. **Select task** — lists RUNNING tasks sorted by creation time (newest first). Auto-selects if only one exists.
-8. **Select container** — auto-selects if the task has a single container; prompts otherwise, unless `--container` / `defaults.container` matches.
+8. **Select container** — auto-selects if the task has a single container; prompts otherwise, unless `--container` / **`defaults.container` with `--default`** matches.
 9. **Connect** — calls `ExecuteCommand` and hands off to `session-manager-plugin`.
 
 ## Configuration
@@ -193,9 +193,15 @@ If a candidate file **exists** but has **invalid YAML** (for example a mis-inden
 
 When the same setting can come from multiple sources, the first match wins:
 
-**CLI flag → environment variable → top-level config fields → `defaults.*` in config → built-in default**
+**CLI flag → environment variable → top-level config fields** (`profile`, `region`, `command`, `environments`, …) **→ built-in default**
 
-For example, `--command /bin/bash` overrides `COMMAND` env var, which overrides the `command:` field in the config file. For cluster/service/container, CLI overrides both root fields and `defaults.*`.
+Top-level YAML **`profile`**, **`region`**, and **`command`** are always candidates (unless overridden by flag/env), with no extra switch.
+
+The **`defaults:`** map (shortcuts such as **`backend`**, **`environment`**, **`cluster`**, **`service`**, **`container`**, **`dynamo_*`**, **`defaults.profile`**) is applied **only** when you run with **`--default`**. Without **`--default`**, the wizard ignores **`defaults:`** even if it is present. CLI flags and env vars still win over any applied default.
+
+If you pass **`--default`** and the config has no usable **`defaults:`** (missing, empty, or all blank fields), the tool prints **`No defaults found in config; continuing without defaults.`** to **stderr** and continues the normal wizard.
+
+For example, `--command /bin/bash` overrides `COMMAND` env var, which overrides the `command:` field in the config file. For **`defaults:*`** fields, use **`--default`** and pass **`--cluster` / `--service`** etc. to override.
 
 ### Full config reference
 
@@ -236,6 +242,7 @@ command: "bundle exec rails c -- --noautocomplete"
 region: eu-west-1
 
 # defaults — optional wizard shortcuts (all optional).
+# Applied only when you pass --default on the CLI.
 # Top-level profile/cluster/service still win over defaults.* when set.
 # `defaults:` must start at column 0 (same as profile:), not indented under another key.
 defaults:
@@ -260,7 +267,7 @@ defaults:
 | `default_slug` | string | `web` | The slug label assigned to services that match `{app}-{env}` exactly (no slug segment in the name). |
 | `command` | string | `/bin/sh` | The command to execute inside the container. Common values: `/bin/bash`, `bundle exec rails c -- --noautocomplete`, `python manage.py shell`. |
 | `region` | string | *(from profile)* | AWS region for all API calls. When omitted, the region is resolved from `--region` flag, `AWS_REGION` env var, or the profile's region in `~/.aws/config`. |
-| `defaults` | map | *(absent)* | Shortcuts to skip wizard steps when values match; see table below. |
+| `defaults` | map | *(absent)* | Shortcuts to skip wizard steps; applied **only with `--default`**. See table below. |
 | `defaults.profile` | string | — | Profile if root `profile` and `AWS_PROFILE` are unset. |
 | `defaults.backend` | string | — | `ecs` / `exec` or `dynamo` / `dynamodb` / `ddb` — skip backend selection. |
 | `defaults.environment` | string | — | Must match an `environments[].name` when naming mode is on; skips env picker. |
@@ -329,7 +336,7 @@ The `default_slug` config field controls what the "bare" service (`{app}-{env}`)
 
 ## Flags and environment variables
 
-All settings can be passed as flags or environment variables. Flags take precedence over config and `defaults.*`.
+All settings can be passed as flags or environment variables. Flags take precedence over config. The **`defaults:`** map is only honored with **`--default`** (see [Value precedence](#value-precedence)).
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
@@ -340,6 +347,7 @@ All settings can be passed as flags or environment variables. Flags take precede
 | `--cluster` | | | ECS cluster (skip interactive selection) |
 | `--service` | | | ECS service (skip interactive selection) |
 | `--container` | | | ECS container name — skip picker when it matches the task (use with `--cluster` / `--service`; see code for multi-task rules) |
+| `--default` | | off | Apply the YAML **`defaults:`** block (backend, env, cluster, service, container, dynamo_*, `defaults.profile`). If no usable defaults exist, prints a message to stderr and continues. |
 | `--reconnect` | | off | **ECS only.** Skip the wizard; use saved targets from `~/.ecs-connect/recents.json` (up to 3 per profile, newest first). Default flag: most recent; **`=prev`** second; **`=old`** third. Verifies RUNNING + container ([Reconnect](#reconnect)). |
 | `--quiet` | `ECS_CONNECT_QUIET=1` | off | Suppress the startup banner (**ECS** path); Dynamo path still prints JSON |
 

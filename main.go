@@ -69,7 +69,12 @@ func main() {
 	cfg := parseFlags()
 
 	fileCfg := loadConfig(cfg.ConfigPath)
-	applyConfigDefaults(&cfg, fileCfg)
+	if cfg.UseYAMLDefaults {
+		if fileCfg == nil || !appconfig.HasYAMLDefaults(fileCfg) {
+			fmt.Fprintln(os.Stderr, "  No defaults found in config; continuing without defaults.")
+		}
+	}
+	applyConfigDefaults(&cfg, fileCfg, cfg.UseYAMLDefaults)
 
 	client := ensureAuth(cfg.Profile, cfg.Region)
 
@@ -79,6 +84,7 @@ func main() {
 	opts.Cluster = cfg.Cluster
 	opts.Service = cfg.Service
 	opts.Container = cfg.Container
+	opts.UseYAMLDefaults = cfg.UseYAMLDefaults
 
 	var outcome *tui.Outcome
 	if cfg.Reconnect.set {
@@ -136,6 +142,7 @@ type cliConfig struct {
 	Service         string
 	Container       string
 	Reconnect       reconnectFlag
+	UseYAMLDefaults bool
 	profileExplicit bool
 	regionExplicit  bool
 	commandExplicit bool
@@ -161,6 +168,8 @@ func parseFlags() cliConfig {
 		"ECS container name (skip picker when task uniquely matches)")
 	flag.Var(&c.Reconnect, "reconnect",
 		"Skip the wizard: reconnect to a saved ECS target (recent=default, prev=2nd, old=3rd); use =prev or =old (~/.ecs-connect/recents.json)")
+	flag.BoolVar(&c.UseYAMLDefaults, "default", false,
+		"Apply defaults: from config file only when set (defaults: profile, backend, cluster, service, container, dynamo_*, environment)")
 
 	flag.Usage = printHelp
 	flag.Parse()
@@ -210,16 +219,17 @@ func loadConfig(path string) *appconfig.Config {
 	return cfg
 }
 
-// applyConfigDefaults overrides built-in defaults with values from the config
-// file, but only when the corresponding flag/env var was not explicitly set.
-func applyConfigDefaults(cfg *cliConfig, fileCfg *appconfig.Config) {
+// applyConfigDefaults merges top-level config file fields (profile, region, command)
+// when flags/env did not set them. The defaults: block is merged only when
+// applyYAMLDefaults is true and HasYAMLDefaults(fileCfg) is true.
+func applyConfigDefaults(cfg *cliConfig, fileCfg *appconfig.Config, applyYAMLDefaults bool) {
 	if fileCfg == nil {
 		return
 	}
 	if !cfg.profileExplicit && os.Getenv("AWS_PROFILE") == "" {
 		if fileCfg.Profile != "" {
 			cfg.Profile = fileCfg.Profile
-		} else if fileCfg.Defaults != nil {
+		} else if applyYAMLDefaults && appconfig.HasYAMLDefaults(fileCfg) && fileCfg.Defaults != nil {
 			if p := strings.TrimSpace(fileCfg.Defaults.Profile); p != "" {
 				cfg.Profile = p
 			}
@@ -231,17 +241,18 @@ func applyConfigDefaults(cfg *cliConfig, fileCfg *appconfig.Config) {
 	if !cfg.commandExplicit && os.Getenv("COMMAND") == "" && fileCfg.Command != "" {
 		cfg.Command = fileCfg.Command
 	}
-	if fileCfg.Defaults != nil {
-		d := fileCfg.Defaults
-		if cfg.Cluster == "" && strings.TrimSpace(d.Cluster) != "" {
-			cfg.Cluster = strings.TrimSpace(d.Cluster)
-		}
-		if cfg.Service == "" && strings.TrimSpace(d.Service) != "" {
-			cfg.Service = strings.TrimSpace(d.Service)
-		}
-		if cfg.Container == "" && strings.TrimSpace(d.Container) != "" {
-			cfg.Container = strings.TrimSpace(d.Container)
-		}
+	if !applyYAMLDefaults || !appconfig.HasYAMLDefaults(fileCfg) {
+		return
+	}
+	d := fileCfg.Defaults
+	if cfg.Cluster == "" && strings.TrimSpace(d.Cluster) != "" {
+		cfg.Cluster = strings.TrimSpace(d.Cluster)
+	}
+	if cfg.Service == "" && strings.TrimSpace(d.Service) != "" {
+		cfg.Service = strings.TrimSpace(d.Service)
+	}
+	if cfg.Container == "" && strings.TrimSpace(d.Container) != "" {
+		cfg.Container = strings.TrimSpace(d.Container)
 	}
 }
 

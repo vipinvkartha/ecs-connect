@@ -38,11 +38,12 @@ type Result struct {
 
 // Options configures the TUI wizard.
 type Options struct {
-	Client    *cloud.Client  // pre-authenticated client (built by main)
-	Config    *config.Config // naming/env config (nil = generic mode)
-	Cluster   string         // pre-selected cluster (skip picker)
-	Service   string         // pre-selected service (skip picker)
-	Container string         // pre-selected container (skip picker when task matches)
+	Client          *cloud.Client  // pre-authenticated client (built by main)
+	Config          *config.Config // naming/env config (nil = generic mode)
+	Cluster         string         // pre-selected cluster (skip picker)
+	Service         string         // pre-selected service (skip picker)
+	Container       string         // pre-selected container (skip picker when task matches)
+	UseYAMLDefaults bool           // apply config Defaults block (backend, env shortcuts, dynamo_*)
 }
 
 // Run launches the interactive TUI wizard and returns an outcome
@@ -186,6 +187,9 @@ type model struct {
 	// presetContainer is the CLI/YAML container name; applied when tasks load.
 	presetContainer string
 
+	// useYAMLDefaults gates defaults: from .ecs-connect.yaml (requires --default on CLI).
+	useYAMLDefaults bool
+
 	dynamoMode          bool
 	backendCursor       int
 	ddbClient           *ddb.Client
@@ -244,6 +248,7 @@ func newModel(opts Options) model {
 		cluster:             opts.Cluster,
 		service:             opts.Service,
 		presetContainer:     strings.TrimSpace(opts.Container),
+		useYAMLDefaults:     opts.UseYAMLDefaults,
 		step:                stepCheckAuth,
 	}
 
@@ -299,7 +304,7 @@ func (m *model) afterAuth() (step, tea.Cmd) {
 }
 
 func (m model) matchingConfiguredDefaultEnv() string {
-	if m.cfg == nil || m.cfg.Defaults == nil {
+	if !m.useYAMLDefaults || m.cfg == nil || m.cfg.Defaults == nil {
 		return ""
 	}
 	want := strings.TrimSpace(m.cfg.Defaults.Environment)
@@ -314,8 +319,8 @@ func (m model) matchingConfiguredDefaultEnv() string {
 	return ""
 }
 
-func defaultsBackend(cfg *config.Config) string {
-	if cfg == nil || cfg.Defaults == nil {
+func defaultsBackend(cfg *config.Config, useYAMLDefaults bool) string {
+	if !useYAMLDefaults || cfg == nil || cfg.Defaults == nil {
 		return ""
 	}
 	return cfg.Defaults.Backend
@@ -1073,7 +1078,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case authOKMsg:
 		m.authARN = string(msg)
 		m.backendCursor = 0
-		backend := config.NormalizeBackend(defaultsBackend(m.cfg))
+		backend := config.NormalizeBackend(defaultsBackend(m.cfg, m.useYAMLDefaults))
 		switch backend {
 		case "dynamo":
 			m.dynamoMode = true
@@ -1108,7 +1113,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		kw := ""
-		if m.cfg != nil && m.cfg.Defaults != nil {
+		if m.useYAMLDefaults && m.cfg != nil && m.cfg.Defaults != nil {
 			kw = strings.TrimSpace(m.cfg.Defaults.DynamoKeyword)
 		}
 		if kw != "" {
@@ -1130,7 +1135,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.dynamoTableItems = filtered
 		wantTable := ""
-		if m.cfg != nil && m.cfg.Defaults != nil {
+		if m.useYAMLDefaults && m.cfg != nil && m.cfg.Defaults != nil {
 			wantTable = strings.TrimSpace(m.cfg.Defaults.DynamoTable)
 		}
 		if wantTable != "" {

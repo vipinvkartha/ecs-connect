@@ -96,6 +96,23 @@ func Discover() (*Config, error) {
 	return nil, nil
 }
 
+// HasYAMLDefaults reports whether the config has a non-empty defaults: block.
+// Safe to call on a nil receiver.
+func HasYAMLDefaults(c *Config) bool {
+	if c == nil || c.Defaults == nil {
+		return false
+	}
+	d := c.Defaults
+	return strings.TrimSpace(d.Profile) != "" ||
+		strings.TrimSpace(d.Backend) != "" ||
+		strings.TrimSpace(d.Environment) != "" ||
+		strings.TrimSpace(d.Cluster) != "" ||
+		strings.TrimSpace(d.Service) != "" ||
+		strings.TrimSpace(d.Container) != "" ||
+		strings.TrimSpace(d.DynamoTable) != "" ||
+		strings.TrimSpace(d.DynamoKeyword) != ""
+}
+
 // HasNaming reports whether the config defines environment-based naming.
 // Safe to call on a nil receiver.
 func (c *Config) HasNaming() bool {
